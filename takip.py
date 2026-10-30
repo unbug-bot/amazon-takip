@@ -161,12 +161,12 @@ def gorev_arama(tr, con, cfg, a, o, olaylar) -> bool:
             for s in range(1, n + 1):
                 k = f"arama:{t['id']}:{sorgu}:{s}"
                 if eski_mi(dget(con, k), saat):
-                    _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k)
+                    _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat)
                     return True
     return False
 
 
-def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k) -> None:
+def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
     marka = bool(t.get("markalar")) and dget(con, f"markasiz:{t['id']}") is None
     sonuc = T._ara(tr, t, sorgu, s, marka)
     if not sonuc and s == 1 and marka:
@@ -175,9 +175,18 @@ def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k) -> None:
         sonuc = T._ara(tr, t, sorgu, s, False)
     dset(con, k, simdi_s())
     if not sonuc:
+        try:
+            sayfa_basligi = tr.page.title()[:60]
+        except Exception:
+            sayfa_basligi = "?"
+        if s == 1:
+            # İlk sayfanın boş gelmesi engelleme belirtisi olabilir: 24 saat değil 2 saat sonra yeniden dene
+            dset(con, k, (datetime.now() - timedelta(hours=max(saat - 2, 0))).isoformat(timespec="seconds"))
+            log(f"  arama '{sorgu}' s1: sonuç yok (sayfa: {sayfa_basligi}); 2 saat sonra yeniden denenecek")
+            return
         for s2 in range(s + 1, n + 1):  # sonraki sayfalar da boştur
             dset(con, f"arama:{t['id']}:{sorgu}:{s2}", simdi_s())
-        log(f"  arama '{sorgu}' s{s}: sonuç yok")
+        log(f"  arama '{sorgu}' s{s}: sonuç yok (sayfa: {sayfa_basligi})")
         return
     if t.get("beden"):
         gun = int(t.get("yeniden_tarama_gun", 7))
@@ -227,38 +236,71 @@ SIRA = ["kontrol", "kontrol", "arama", "kesif"]
 
 # ---------------------------------------------------------------- web sayfası (sade)
 
+def _gecmis_ozet(con) -> dict:
+    """Her ürün için stoktayken görülen en ucuz, en pahalı ve fiyat değişim sırası."""
+    oz: dict = {}
+    for r in con.execute("SELECT asin, fiyat FROM gecmis WHERE fiyat IS NOT NULL AND stokta=1 "
+                         "ORDER BY asin, ts"):
+        d = oz.setdefault(r["asin"], {"min": r["fiyat"], "max": r["fiyat"], "seri": []})
+        d["min"] = min(d["min"], r["fiyat"])
+        d["max"] = max(d["max"], r["fiyat"])
+        if not d["seri"] or d["seri"][-1] != r["fiyat"]:  # art arda aynı fiyatları tek say
+            d["seri"].append(r["fiyat"])
+    return oz
+
+
+def _degisim(r, d) -> str:
+    if not r["stokta"] or not d or len(d["seri"]) < 2 or d["seri"][-1] != r["son_fiyat"]:
+        return ""
+    onceki, son = d["seri"][-2], d["seri"][-1]
+    p = (son - onceki) * 100 / onceki
+    yuzde = f"{abs(p):.1f}".replace(".", ",")
+    if p < 0:
+        return f'<span class="d">↓ %{yuzde}</span>'
+    return f'<span class="z">↑ %{yuzde}</span>'
+
+
 def site_uret(con, cfg) -> None:
     SITE.mkdir(exist_ok=True)
     e = html.escape
+    oz = _gecmis_ozet(con)
     son = con.execute("SELECT * FROM calismalar ORDER BY rowid DESC LIMIT 1").fetchone()
-    parca = [f"<h1>Amazon fiyat takibi</h1><p>Son güncelleme: {datetime.now():%d.%m.%Y %H:%M}</p>"]
+    parca = [f"<h1>Amazon fiyat takibi</h1><p>Son güncelleme: {datetime.now():%d.%m.%Y %H:%M}<br>"
+             "<small>Değişim: son fiyatın bir önceki farklı fiyata göre farkı. "
+             "En ucuz / en pahalı: takip başladığından beri stoktayken görülen fiyatlar.</small></p>"]
     for t in cfg["takipler"]:
         if not t.get("aktif", True):
             continue
         rows = con.execute("SELECT * FROM urunler WHERE takip_id=? AND aktif=1 "
                            "ORDER BY stokta DESC, son_fiyat", (t["id"],)).fetchall()
-        parca.append(f"<h2>{e(t['ad'])}</h2>")
+        parca.append(f"<h2>{e(t['ad'])} <small>({len(rows)})</small></h2>")
         if not rows:
             parca.append("<p>Henüz ürün yok.</p>")
             continue
-        parca.append("<ul>")
+        parca.append('<div class="t"><table><thead><tr><th>Son fiyat</th><th>Değişim</th>'
+                     '<th>En ucuz</th><th>En pahalı</th><th class="u">Ürün</th></tr></thead><tbody>')
         for r in rows:
+            d = oz.get(r["asin"])
             url = f"{T.BASE}/dp/{r['asin']}" + ("?th=1&psc=1" if r["beden"] else "")
-            fiyat = tl(r["son_fiyat"]) if r["stokta"] else "stokta yok"
+            fiyat = f"<b>{tl(r['son_fiyat'])}</b>" if r["stokta"] else "stokta yok"
             ek = f" [{e(r['beden'])}]" if r["beden"] else ""
-            dip = (f" <small>(en düşük {tl(r['en_dusuk'])})</small>"
-                   if r["stokta"] and r["en_dusuk"] and r["son_fiyat"] and r["en_dusuk"] < r["son_fiyat"] else "")
-            parca.append(f'<li><b>{fiyat}</b>{dip} <a href="{e(url)}">{e(r["baslik"] or r["asin"])}</a>{ek}</li>')
-        parca.append("</ul>")
+            parca.append(f"<tr><td>{fiyat}</td><td>{_degisim(r, d)}</td>"
+                         f"<td>{tl(d['min']) if d else '-'}</td><td>{tl(d['max']) if d else '-'}</td>"
+                         f'<td class="u"><a href="{e(url)}">{e(r["baslik"] or r["asin"])}</a>{ek}</td></tr>')
+        parca.append("</tbody></table></div>")
     if son:
         parca.append(f"<p><small>Son çalışma: {e(son['ts'][:16].replace('T', ' '))}, "
                      f"{son['sayfa']} sayfa, sonuç: {e(son['sonuc'])}</small></p>")
+    css = (":root{color-scheme:light dark}body{font-family:-apple-system,sans-serif;max-width:1100px;"
+           "margin:0 auto;padding:12px;line-height:1.45}.t{overflow-x:auto}"
+           "table{border-collapse:collapse;width:100%;font-size:14px}"
+           "th,td{padding:5px 8px;border-bottom:1px solid #8884;text-align:right;white-space:nowrap;vertical-align:top}"
+           "th{font-weight:600}.u{text-align:left;white-space:normal;min-width:240px}"
+           ".d{color:#2da44e;font-weight:600}.z{color:#e5534b;font-weight:600}")
     sayfa = ('<!doctype html><html lang="tr"><head><meta charset="utf-8">'
              '<meta name="viewport" content="width=device-width, initial-scale=1">'
              '<meta name="robots" content="noindex"><title>Amazon fiyat takibi</title>'
-             '<style>:root{color-scheme:light dark}body{font-family:-apple-system,sans-serif;'
-             'max-width:800px;margin:0 auto;padding:12px;line-height:1.5}li{margin:6px 0}</style>'
-             f'</head><body>{"".join(parca)}</body></html>')
+             f'<style>{css}</style></head><body>{"".join(parca)}</body></html>')
     (SITE / "index.html").write_text(sayfa, encoding="utf-8")
 
 

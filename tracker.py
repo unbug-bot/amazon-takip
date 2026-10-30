@@ -102,6 +102,33 @@ def beden_uyar(etiket: str | None, kural: dict) -> bool:
     raise ValueError(f"Bilinmeyen beden tipi: {kural['tip']}")
 
 
+BEL_BOY_DESENLERI = (
+    r"\bW\s*(\d{2})\s*[xX×/\-]?\s*L\s*(\d{2})\b",       # W34 x L34, W34L34
+    r"\b(\d{2})\s*W\s*[xX×/\-]?\s*(\d{2})\s*L\b",       # 34W x 34L
+    r"(?<![\d.,/])(\d{2})\s*/\s*(\d{2})(?![\d/])",          # 34/34
+)
+
+
+def basliktan_beden(baslik: str, kural: dict) -> str | None:
+    """Varyantı olmayan (tek bedenli) ilanlarda bedeni başlıktan bulur."""
+    if not baslik:
+        return None
+    if kural["tip"] == "bel_boy":
+        hedef = (int(kural["bel"]), int(kural["boy"]))
+        for desen in BEL_BOY_DESENLERI:
+            for m in re.finditer(desen, baslik, re.I):
+                if (int(m.group(1)), int(m.group(2))) == hedef:
+                    return m.group(0).strip()
+        return None
+    if kural["tip"] == "harf":
+        s = re.sub(r"\s*-\s*|\s+", "-", norm(baslik))
+        for a in kural["esdegerler"]:
+            a2 = re.sub(r"\s*-\s*|\s+", "-", norm(a))
+            if re.search(r"(?<![a-z0-9])" + re.escape(a2) + r"(?![a-z0-9])", s):
+                return a.upper()
+    return None
+
+
 def baslik_uygun(baslik: str, takip: dict) -> bool:
     t = norm(baslik)
     for grup in takip.get("baslikta_gerekli", []):
@@ -463,7 +490,14 @@ def _kesfet(tr, con, takip, ayarlar, olaylar, asin, kural, gun) -> None:
     if not varyantlar:
         varyantlar = {v["asin"]: [v["etiket"]] for v in tr.page.evaluate(VARYANT_JS)}
     eslesen = {a: " ".join(d) for a, d in varyantlar.items() if varyant_uyar(d, kural)}
-    log(f"     {len(varyantlar)} varyant, aranan beden: {len(eslesen)}")
+    kaynak = ""
+    if not varyantlar:
+        # Tek bedenli ilan: beden yalnızca başlıkta yazıyor olabilir ("... W34 x L34")
+        etiket = basliktan_beden(b["baslik"], kural)
+        if etiket:
+            eslesen = {asin: f"{etiket} (başlıktan)"}
+            kaynak = " (başlıktan)"
+    log(f"     {len(varyantlar)} varyant, aranan beden: {len(eslesen)}{kaynak}")
     taranma_kaydi(con, asin, takip["id"], bool(eslesen))
     taranma_kaydi(con, parent, takip["id"], bool(eslesen))
     con.commit()
