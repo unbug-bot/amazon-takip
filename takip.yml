@@ -1,0 +1,68 @@
+name: amazon-takip
+on:
+  schedule:
+    - cron: '7,37 * * * *'   # saatte 2 kez (GitHub yoğunken birkaç dakika gecikebilir)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: amazon-takip
+  cancel-in-progress: false
+
+jobs:
+  takip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TZ: Europe/Istanbul
+    environment:
+      name: github-pages
+      url: ${{ steps.yayin.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Playwright
+        run: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+
+      - name: Önceki veriyi al
+        run: |
+          if git fetch -q origin veri 2>/dev/null; then
+            git show origin/veri:veri.db > veri.db
+            git show origin/veri:oturum.json > oturum.json 2>/dev/null || rm -f oturum.json
+            echo "veri dalından alındı"
+          else
+            echo "veri dalı yok; repodaki veri.db (varsa) kullanılacak"
+          fi
+
+      - name: Tara
+        run: python takip.py
+
+      - name: Veriyi kaydet
+        if: always()
+        run: |
+          [ -f veri.db ] || exit 0
+          mkdir -p /tmp/veri && cp veri.db /tmp/veri/ && { cp oturum.json /tmp/veri/ 2>/dev/null || true; }
+          cd /tmp/veri
+          git init -q -b veri
+          git config user.name "takip-bot"
+          git config user.email "takip-bot@users.noreply.github.com"
+          git add -A && git commit -qm "veri $(date '+%F %T')"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" veri
+
+      - uses: actions/upload-pages-artifact@v3
+        if: always()
+        with:
+          path: site
+
+      - id: yayin
+        if: always()
+        uses: actions/deploy-pages@v4

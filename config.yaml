@@ -1,0 +1,67 @@
+# Amazon.com.tr takip ayarları. Değiştirdikten sonra yeniden kurulum gerekmez.
+
+ayarlar:
+  headless: true              # CAPTCHA sıklaşırsa false yap (pencere açılır)
+  bekleme_saniye: [4, 8]      # sayfa yüklemeleri arası rastgele bekleme
+  min_indirim_yuzde: 5        # son fiyata göre en az bu kadar düşüş = İNDİRİM
+  max_sayfa_yukleme: 400      # bir çalıştırmadaki üst sınır
+  yeni_urun_bildir: false     # true: ilk kez görülen stoktaki ürünü de bildir
+  telegram:                   # telefona bildirim için (isteğe bağlı)
+    bot_token: ""
+    chat_id: ""
+
+takipler:
+  # Erkek pantolon, bel 34 / boy 34. Beden etiketindeki sayılar tam olarak
+  # [34, 34] ise eşleşir: "34/34", "W34 L34", "34W x 34L", "Bel 34 Boy 34".
+  - id: pantolon_34_34
+    ad: "Pantolon 34/34"
+    aramalar:
+      - "erkek pantolon 34/34"
+      - "erkek jean pantolon W34 L34"
+      - "erkek chino pantolon 34/34"
+      - "erkek kumaş pantolon 34/34"
+    beden: {tip: bel_boy, bel: 34, boy: 34}
+    baslikta_gerekli:
+      - ["pantolon", "jean", "kot", "chino", "trousers", "pants"]
+    baslikta_olmamali: ["kadın", "kız çocuk", "erkek çocuk", "şort", "bermuda", "eşofman"]
+    sayfa_sayisi: 3
+    yeni_urun_limiti: 40      # her çalıştırmada en çok kaç yeni ürün sayfası açılsın
+    yeniden_tarama_gun: 7     # 34/34'ü olmayan ürüne kaç günde bir yeniden bakılsın
+    hedef_fiyat: null         # ör. 800 -> 800 TL ve altı ayrıca bildirilir
+
+  # Dior parfüm. Arama sonucu fiyatıyla takip edilir (ürün sayfası açılmaz).
+  - id: dior_parfum
+    ad: "Dior parfüm"
+    aramalar: ["Dior parfüm", "Dior eau de parfum", "Dior eau de toilette"]
+    markalar: ["Dior", "Christian Dior"]
+    baslikta_gerekli:
+      - ["dior"]
+      - ["parfüm", "parfum", "edp", "edt", "eau de", "kolonya", "cologne", "perfume", "fragrance"]
+    baslikta_olmamali: ["muadil", "esintili", "esansı", "inspired", "benzeri", "alternatif",
+                        "deo", "deodorant", "hair mist", "saç parfümü", "body lotion", "vücut losyonu",
+                        "body milk", "shower gel", "duş jeli", "after shave", "tıraş"]
+    sayfa_sayisi: 3
+    hedef_fiyat: null
+
+  # Mavi Jeans gömlek, XXL. "Mavi" aynı zamanda renk olduğu için marka
+  # ürün sayfasındaki marka satırından (bylineInfo) doğrulanır.
+  - id: mavi_gomlek_xxl
+    ad: "Mavi gömlek XXL"
+    aramalar: ["Mavi Jeans erkek gömlek", "Mavi erkek gömlek"]
+    markalar: ["Mavi"]
+    beden: {tip: harf, esdegerler: ["xxl", "2xl", "xx-large", "xxlarge", "2x-large", "2xlarge"]}
+    baslikta_gerekli:
+      - ["gömlek", "gomlek", "shirt"]
+    baslikta_olmamali: ["kadın", "çocuk", "tişört", "t-shirt"]
+    sayfa_sayisi: 3
+    yeni_urun_limiti: 40
+    yeniden_tarama_gun: 7
+    hedef_fiyat: null
+
+# Yalnızca GitHub (online) sürümü için. Saatte 2 çalışma x 8 sayfa = günde ~380 sayfa, güne yayılmış.
+online:
+  sayfa_butcesi: 8            # bir çalışmada açılacak sayfa sayısı
+  bekleme_saniye: [20, 40]    # sayfalar arası bekleme
+  kontrol_saat: 4             # takipteki pantolon/gömlek varyantı en geç kaç saatte bir kontrol edilsin
+  arama_saat_bedensiz: 6      # Dior arama sayfaları kaç saatte bir yenilensin
+  arama_saat_bedenli: 24      # pantolon/gömlek aramaları (yeni ürün keşfi) kaç saatte bir
