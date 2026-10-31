@@ -3,6 +3,15 @@ on:
   schedule:
     - cron: '7,37 * * * *'   # saatte 2 kez (GitHub yoğunken birkaç dakika gecikebilir)
   workflow_dispatch:
+    inputs:
+      mod:
+        description: 'normal ya da kesif (kesif = kontrol yapmadan önce tüm aramalar ve yeni ürünler)'
+        type: choice
+        options: [normal, kesif]
+        default: normal
+      sayfa:
+        description: 'Bu çalışmada açılacak sayfa sayısı (normal 8, en fazla 120)'
+        default: '8'
 
 permissions:
   contents: write
@@ -16,7 +25,7 @@ concurrency:
 jobs:
   takip:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 120
     env:
       TZ: Europe/Istanbul
     environment:
@@ -44,6 +53,9 @@ jobs:
           fi
 
       - name: Tara
+        env:
+          MOD: ${{ inputs.mod }}
+          SAYFA_BUTCESI: ${{ inputs.sayfa }}
         run: python takip.py
 
       - name: Veriyi kaydet
