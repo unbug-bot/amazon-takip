@@ -91,17 +91,19 @@ takipler:
   # Ürün sayfasında otomatik mekanizma ve safir cam açıkça yazmıyorsa elenir.
   # Satıcı: güvenilir_saticilar listesinde olmalı ya da Amazon satıcı puanı en az %90 olumlu olmalı.
   - id: saat_otomatik_safir
-    ad: "Otomatik safir camlı saatler (en fazla 18.000 TL)"
+    ad: "Otomatik safir camlı saatler (en fazla 28.000 TL)"
     aramalar: ["Seiko otomatik saat", "Citizen otomatik saat", "Orient otomatik saat",
-               "Lorus otomatik saat", "Alba otomatik saat"]
+               "Lorus otomatik saat", "Alba otomatik saat", "Bulova otomatik saat",
+               "Tissot otomatik saat", "Certina otomatik saat", "Hamilton otomatik saat",
+               "Glycine otomatik saat", "Mido otomatik saat"]
     sayfa_sayisi: 2
     baslikta_gerekli:
-      - ["seiko", "citizen", "orient", "lorus", "alba"]
-      - ["otomatik", "automatic", "automatik", "mekanik"]
+      - ["seiko", "citizen", "orient", "lorus", "alba", "bulova", "tissot", "certina", "hamilton", "glycine", "mido"]
+      - ["otomatik", "automatic", "automatik", "mekanik", "powermatic", "auto"]
     baslikta_olmamali: ["quartz", "kuvars", "eco-drive", "eco drive", "solar", "yedek", "uyumlu"]
     yeniden_tarama_gun: 7
     saat:
-      markalar: ["Seiko", "Citizen", "Orient", "Lorus", "Alba"]
+      markalar: ["Seiko", "Citizen", "Orient", "Lorus", "Alba", "Bulova", "Tissot", "Certina", "Hamilton", "Glycine", "Mido"]
       fiyat_ust: 28000
       satici_min_olumlu: 90
       guvenilir_saticilar: ["Amazon.com.tr"]   # bildiğin satıcı adlarını buraya ekle
