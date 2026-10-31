@@ -181,7 +181,9 @@ def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
             sayfa_basligi = "?"
         if s == 1:
             # İlk sayfanın boş gelmesi engelleme belirtisi olabilir: 24 saat değil 2 saat sonra yeniden dene
-            dset(con, k, (datetime.now() - timedelta(hours=max(saat - 2, 0))).isoformat(timespec="seconds"))
+            ertele = (datetime.now() - timedelta(hours=max(saat - 2, 0))).isoformat(timespec="seconds")
+            for s2 in range(1, n + 1):  # sonraki sayfalar da ilk sayfayla birlikte denensin
+                dset(con, f"arama:{t['id']}:{sorgu}:{s2}", ertele)
             log(f"  arama '{sorgu}' s1: sonuç yok (sayfa: {sayfa_basligi}); 2 saat sonra yeniden denenecek")
             return
         for s2 in range(s + 1, n + 1):  # sonraki sayfalar da boştur
@@ -207,8 +209,9 @@ def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
             fiyat = T.parse_price(r["fiyat"])
             if fiyat is None:
                 continue
-            T.kaydet(con, t, a, olaylar, asin=r["asin"], parent=None, baslik=r["baslik"], beden=None,
-                     fiyat=fiyat, liste=T.parse_price(r["liste"]), stokta=True)
+            etiket = T.parfum_etiketi(r["baslik"], t["parfum"]) if t.get("parfum") else None
+            T.kaydet(con, t, a, olaylar, asin=r["asin"], parent=None, baslik=r["baslik"],
+                     beden=etiket or None, fiyat=fiyat, liste=T.parse_price(r["liste"]), stokta=True)
             kayit += 1
         log(f"  arama '{sorgu}' s{s}: {len(sonuc)} sonuç, {kayit} fiyat kaydedildi")
 
@@ -306,12 +309,26 @@ def site_uret(con, cfg) -> None:
 
 # ---------------------------------------------------------------- ana akış
 
+def veri_sil(con, tid: str) -> None:
+    """config'deki veri_sil listesindeki takibin tüm kayıtlarını siler (tekrar çalışırsa iş yapmaz)."""
+    n = con.execute("SELECT COUNT(*) FROM urunler WHERE takip_id=?", (tid,)).fetchone()[0]
+    con.execute("DELETE FROM gecmis WHERE asin IN (SELECT asin FROM urunler WHERE takip_id=?)", (tid,))
+    for tablo in ("urunler", "taranan", "adaylar"):
+        con.execute(f"DELETE FROM {tablo} WHERE takip_id=?", (tid,))
+    con.execute("DELETE FROM durum WHERE anahtar LIKE ? OR anahtar=?", (f"arama:{tid}:%", f"markasiz:{tid}"))
+    con.commit()
+    if n:
+        log(f"'{tid}' takibinin {n} ürünü ve fiyat geçmişi silindi")
+
+
 def main() -> None:
     cfg = T.ayarlari_yukle()
     a = cfg["ayarlar"]
     o = {**ONLINE_VARSAYILAN, **(cfg.get("online") or {})}
     con = T.db_baglan()
     con.executescript(EK_SCHEMA)
+    for tid in cfg.get("veri_sil") or []:
+        veri_sil(con, tid)
     for t in cfg["takipler"]:
         T.filtreyi_uygula(con, t)
 

@@ -129,7 +129,63 @@ def basliktan_beden(baslik: str, kural: dict) -> str | None:
     return None
 
 
+# ---- parfüm eşleştirme -------------------------------------------------
+_HARF = "a-zçğıöşü"
+_AKSAN = str.maketrans("âàáäéèêëîíìïôóòûúùñ’‘`´", "aaaaeeeeiiiiooouuun" + "'" * 4)
+PARFUM_ORTAK_HARIC = (
+    "muadil", "esintili", "esans", "esansı", "inspired", "benzeri", "alternatif", "decant",
+    "bölünmüş", "dolum", "numune", "sample", "set", "seti", "kofre", "gift", "deo", "deodorant",
+    "after shave", "aftershave", "shower", "duş", "body", "losyon", "balm", "stick", "sabun", "soap",
+    "edt", "eau de toilette", "toilette", "cologne", "kolonya",
+)
+
+
+def _sade(s: str) -> str:
+    """'La Nuit de L’Homme EDP100ml' -> 'la nuit de l homme edp100ml' (Türkçe harfler korunur)."""
+    s = norm(s).translate(_AKSAN).replace("'", " ")
+    return re.sub(rf"[^0-9{_HARF}]+", " ", s).strip()
+
+
+def _kelime_var(sade: str, k: str) -> bool:
+    return re.search(rf"(?<![{_HARF}]){re.escape(_sade(k))}(?![{_HARF}])", sade) is not None
+
+
+def parfum_etiketi(baslik: str, kural: dict) -> str | None:
+    """Başlık tam istenen parfümse 'EDP 100 ml' gibi bir etiket, değilse None döndürür.
+    kural: gerekli (sıkıştırılmış başlıkta hepsi geçmeli), haric (ek kelimeler),
+           konsantrasyon: 'serbest' | 'edp' (EDP yazmalı) | 'edp_parfum' (EDP ya da Parfum yazmalı)."""
+    sade = _sade(baslik)
+    bitisik = sade.replace(" ", "")
+    if not all(_sade(g).replace(" ", "") in bitisik for g in kural["gerekli"]):
+        return None
+    if any(_kelime_var(sade, k) for k in (*PARFUM_ORTAK_HARIC, *kural.get("haric", []))):
+        return None
+    edp = _kelime_var(sade, "edp") or _kelime_var(sade, "eau de parfum")
+    parfum = not edp and (_kelime_var(sade, "parfum") or _kelime_var(sade, "extrait"))
+    if kural.get("konsantrasyon") == "edp_parfum" and not (edp or parfum):
+        return None
+    if kural.get("konsantrasyon") == "edp" and not edp:
+        return None
+    parca = []
+    if "elixir" in bitisik:
+        parca.append("Elixir")
+    elif "leparfum" in bitisik:
+        parca.append("Le Parfum")
+    elif edp:
+        parca.append("EDP")
+    elif parfum:
+        parca.append("Parfum")
+    m = re.search(r"(\d{1,3})\s*ml(?![a-z])", sade)
+    if m:
+        parca.append(f"{int(m.group(1))} ml")
+    if _kelime_var(sade, "tester"):
+        parca.append("Tester")
+    return " ".join(parca)
+
+
 def baslik_uygun(baslik: str, takip: dict) -> bool:
+    if takip.get("parfum"):
+        return parfum_etiketi(baslik, takip["parfum"]) is not None
     t = norm(baslik)
     for grup in takip.get("baslikta_gerekli", []):
         if not any(norm(k) in t for k in grup):
@@ -377,9 +433,10 @@ def kaydet(con, takip, ayarlar, olaylar, *, asin, parent, baslik, beden,
         if stokta and fiyat is not None:
             yeni_min = fiyat if eski_min is None else min(eski_min, fiyat)
         con.execute(
-            "UPDATE urunler SET baslik=COALESCE(NULLIF(?,''),baslik), son_fiyat=COALESCE(?,son_fiyat),"
-            " en_dusuk=?, liste_fiyati=COALESCE(?,liste_fiyati), stokta=?, son_kontrol=? WHERE asin=?",
-            (baslik, fiyat, yeni_min, liste, int(stokta), simdi, asin))
+            "UPDATE urunler SET baslik=COALESCE(NULLIF(?,''),baslik), beden=COALESCE(?,beden),"
+            " son_fiyat=COALESCE(?,son_fiyat), en_dusuk=?, liste_fiyati=COALESCE(?,liste_fiyati),"
+            " stokta=?, son_kontrol=? WHERE asin=?",
+            (baslik, beden, fiyat, yeni_min, liste, int(stokta), simdi, asin))
 
     con.execute("INSERT INTO gecmis VALUES(?,?,?,?)", (asin, simdi, fiyat, int(stokta)))
     con.commit()
