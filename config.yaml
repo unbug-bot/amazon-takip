@@ -102,7 +102,7 @@ takipler:
     yeniden_tarama_gun: 7
     saat:
       markalar: ["Seiko", "Citizen", "Orient", "Lorus", "Alba"]
-      fiyat_ust: 18000
+      fiyat_ust: 28000
       satici_min_olumlu: 90
       guvenilir_saticilar: ["Amazon.com.tr"]   # bildiğin satıcı adlarını buraya ekle
 
