@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import os
 import random
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -34,7 +35,17 @@ EK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS durum(anahtar TEXT PRIMARY KEY, deger TEXT);
 CREATE TABLE IF NOT EXISTS adaylar(asin TEXT PRIMARY KEY, takip_id TEXT, baslik TEXT, eklenme TEXT);
 CREATE TABLE IF NOT EXISTS calismalar(ts TEXT, sayfa INTEGER, captcha INTEGER, sonuc TEXT);
+CREATE TABLE IF NOT EXISTS saticilar(id TEXT PRIMARY KEY, ad TEXT, oran REAL, kapsam TEXT, ts TEXT);
 """
+
+
+def sema_guncelle(con) -> None:
+    kolonlar = {r[1] for r in con.execute("PRAGMA table_info(urunler)")}
+    if "satici" not in kolonlar:
+        con.execute("ALTER TABLE urunler ADD COLUMN satici TEXT")
+    if "satici_uygun" not in kolonlar:
+        con.execute("ALTER TABLE urunler ADD COLUMN satici_uygun INTEGER DEFAULT 1")
+    con.commit()
 
 
 def simdi_s() -> str:
@@ -116,6 +127,172 @@ class OnlineTarayici:
                 pass
 
 
+# ---------------------------------------------------------------- saat doğrulama
+
+SAAT_JS = r"""() => {
+  const q = s => document.querySelector(s);
+  const t = s => { const e = q(s); return e ? e.textContent.replace(/\s+/g, ' ').trim() : ''; };
+  const temiz = x => x.replace(/[\u200e\u200f]/g, '').replace(/\s+/g, ' ').trim();
+  const alanlar = [];
+  document.querySelectorAll('#productOverview_feature_div tr, #poExpander tr').forEach(tr => {
+    const td = tr.querySelectorAll('td');
+    if (td.length >= 2) alanlar.push([temiz(td[0].textContent), temiz(td[1].textContent)]);
+  });
+  document.querySelectorAll('#productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr, table.prodDetTable tr')
+    .forEach(tr => { const th = tr.querySelector('th'), td = tr.querySelector('td');
+      if (th && td) alanlar.push([temiz(th.textContent), temiz(td.textContent)]); });
+  document.querySelectorAll('#detailBullets_feature_div li').forEach(li => {
+    const p = temiz(li.textContent).split(':');
+    if (p.length >= 2) alanlar.push([p[0].trim(), p.slice(1).join(':').trim()]);
+  });
+  const sp = q('#sellerProfileTriggerId');
+  const href = sp ? (sp.getAttribute('href') || '') : '';
+  return {
+    alanlar,
+    maddeler: [...document.querySelectorAll('#feature-bullets li')].map(li => temiz(li.textContent)),
+    aciklama: t('#productDescription').slice(0, 3000),
+    yol: t('#wayfinding-breadcrumbs_feature_div'),
+    satici_ad: sp ? temiz(sp.textContent) : '',
+    satici_id: (href.match(/seller=([A-Z0-9]+)/) || [])[1] || '',
+    satici_metin: t('#merchantInfoFeature_feature_div') || t('#merchant-info') || t('#tabular-buybox'),
+  };
+}"""
+
+SATICI_JS = r"""() => {
+  let tablo = null;
+  const tb = document.querySelector('#feedback-summary-table');
+  if (tb) for (const tr of tb.querySelectorAll('tr')) {
+    const c = [...tr.querySelectorAll('td')].map(x => x.textContent.replace(/\s+/g, ' ').trim());
+    if (c.length > 1 && /olumlu|positive/i.test(c[0])) tablo = c;
+  }
+  return {tablo, metin: document.body ? document.body.innerText.slice(0, 15000) : ''};
+}"""
+
+OTOMATIK = ("otomatik", "automatic", "automatik", "self winding", "kendinden kurmalı", "kendi kendini kuran")
+PILLI = ("kuvars", "quartz", "eco drive", "ecodrive", "solar", "güneş enerjili", "kinetic")
+SAFIR = ("safir", "sapphire")
+KAPLAMA_DESEN = r"(safir|sapphire)\s*(kaplama|kaplamalı|coated|coating)|(kaplama|kaplamalı|coated)\s*(safir|sapphire)"
+SAFIR_DESEN = r"(safir|sapphire)\s*(cam|camı|camlı|kristal|crystal|glass)|(cam|camı|kristal|crystal|glass)\s*(safir|sapphire)"
+BASKA_CAM = ("hardlex", "mineral", "akrilik", "acrylic", "pleksi")
+
+
+def _alan(d, *anahtar) -> str:
+    return " ".join(v for k, v in d["alanlar"] if any(a in T.norm(k) for a in anahtar))
+
+
+def _var(sade: str, kelimeler) -> bool:
+    return any(T._kelime_var(sade, k) for k in kelimeler)
+
+
+def saat_dogrula(b: dict, d: dict, k: dict):
+    """(uygun_mu, elenme_nedeni, marka). Emin olunamayan her durumda elenir."""
+    S = T._sade
+    # ürün gerçekten kol saati mi
+    yol = S(d.get("yol", ""))
+    if yol:
+        if "saat" not in yol or _var(yol, ("kayış", "kayışlar", "aksesuar", "aksesuarlar")):
+            return False, "kategori saat değil", ""
+    elif "saat" not in S(b["baslik"]) and "watch" not in S(b["baslik"]):
+        return False, "başlıkta saat yok", ""
+    # marka: önce teknik tablodaki Marka alanı, yoksa marka satırı
+    marka_kaynak = S(_alan(d, "marka", "brand") or b.get("marka", ""))
+    marka = next((m for m in k["markalar"] if T._kelime_var(marka_kaynak, m)), "")
+    if not marka:
+        return False, f"marka uygun değil ({marka_kaynak[:30] or 'okunamadı'})", ""
+    # mekanizma
+    baslik_madde = S(b["baslik"] + " " + " ".join(d["maddeler"]))
+    tum = S(b["baslik"] + " " + " ".join(v for _, v in d["alanlar"]) + " " + " ".join(d["maddeler"]))
+    if _var(tum, PILLI):
+        return False, "kuvars/pilli/solar ifadesi var", marka
+    hareket = S(_alan(d, "hareket", "movement", "mekanizma"))
+    if not (_var(hareket, OTOMATIK) or _var(baslik_madde, OTOMATIK)):
+        return False, "otomatik olduğu yazmıyor", marka
+    # cam
+    cam = S(_alan(d, "cam", "pencere", "crystal", "window", "kristal"))
+    if cam and (_var(cam, SAFIR) or _var(cam, BASKA_CAM)):
+        if re.search(KAPLAMA_DESEN, cam) or not _var(cam, SAFIR) or _var(cam, BASKA_CAM):
+            return False, f"cam: {cam[:30]}", marka
+    else:
+        metin = S(b["baslik"] + " " + " ".join(d["maddeler"]) + " " + d.get("aciklama", ""))
+        if not re.search(SAFIR_DESEN, metin):
+            return False, "safir cam yazmıyor", marka
+        if re.search(KAPLAMA_DESEN, metin) or _var(metin, ("hardlex",)) or re.search(
+                r"mineral\s*(cam|kristal|crystal|glass)", metin):
+            return False, "cam bilgisi çelişkili", marka
+    return True, "", marka
+
+
+def satici_puani(tr, sid: str):
+    """Satıcı sayfasından olumlu yüzde. (oran, 'toplam' | '12ay') ya da (None, '')."""
+    tr.git(f"{T.BASE}/sp?seller={sid}")
+    s = tr.page.evaluate(SATICI_JS)
+    if s["tablo"]:
+        m = re.search(r"(\d{1,3})", s["tablo"][-1])  # son sütun: tüm zamanlar
+        if m:
+            return float(m.group(1)), "toplam"
+    metin = s["metin"]
+    for desen in (r"(?:tüm zamanlar|ömür boyu|lifetime)[^%\n]{0,60}%\s*(\d{1,3})",
+                  r"%\s*(\d{1,3})[^%\n]{0,60}(?:tüm zamanlar|ömür boyu|lifetime)"):
+        m = re.search(desen, metin, re.I)
+        if m:
+            return float(m.group(1)), "toplam"
+    m = re.search(r"%\s*(\d{1,3})\s*olumlu", metin, re.I) or \
+        re.search(r"(\d{1,3})\s*%\s*(?:olumlu|positive)", metin, re.I)
+    if m:
+        return float(m.group(1)), "12ay"
+    return None, ""
+
+
+def satici_degerlendir(tr, con, d: dict, k: dict):
+    """(uygun_mu, elenme_nedeni, etiket)."""
+    ad = d.get("satici_ad", "").strip()
+    if not ad and re.search(r"(satıcı|sold by)\s*:?\s*amazon|amazon\S*\s*tarafından satıl",
+                            T.norm(d.get("satici_metin", ""))):
+        ad = "Amazon.com.tr"
+    if not ad:
+        return False, "satıcı okunamadı", ""
+    if any(T._sade(g) == T._sade(ad) for g in k.get("guvenilir_saticilar", [])):
+        return True, "", ad
+    sid = d.get("satici_id", "")
+    if not sid:
+        return False, f"satıcı kimliği okunamadı ({ad})", ad
+    r = con.execute("SELECT * FROM saticilar WHERE id=?", (sid,)).fetchone()
+    if r and not eski_mi(r["ts"], 24 * 30):
+        oran, kapsam = r["oran"], r["kapsam"]
+    else:
+        oran, kapsam = satici_puani(tr, sid)
+        con.execute("INSERT OR REPLACE INTO saticilar VALUES(?,?,?,?,?)", (sid, ad, oran, kapsam, simdi_s()))
+        con.commit()
+    if oran is None:
+        return False, f"satıcı puanı okunamadı ({ad})", ad
+    etiket = f"{ad} %{oran:.0f}" + (" (12 ay)" if kapsam == "12ay" else "")
+    if oran < float(k["satici_min_olumlu"]):
+        return False, f"satıcı puanı düşük ({etiket})", etiket
+    return True, "", etiket
+
+
+def _kesfet_saat(tr, con, t, a, olaylar, asin) -> None:
+    k = t["saat"]
+    b = T.urun_sayfasi(tr, asin)
+    if not b:
+        T.taranma_kaydi(con, asin, t["id"], False)
+        return
+    d = tr.page.evaluate(SAAT_JS)
+    ok, neden, marka = saat_dogrula(b, d, k)
+    if ok and (b["fiyat"] is None or b["fiyat"] > float(k["fiyat_ust"])):
+        ok, neden = False, f"fiyat {tl(b['fiyat'])}"
+    etiket = ""
+    if ok:
+        ok, neden, etiket = satici_degerlendir(tr, con, d, k)
+    T.taranma_kaydi(con, asin, t["id"], ok)
+    log(f"     saat: {'UYGUN' if ok else 'elendi, ' + neden} | {marka or '?'} | {tl(b['fiyat'])}")
+    if ok:
+        T.kaydet(con, t, a, olaylar, asin=asin, parent=None, baslik=b["baslik"],
+                 beden=f"{marka}, satıcı {etiket}", fiyat=b["fiyat"], liste=b["liste"], stokta=b["stokta"])
+        con.execute("UPDATE urunler SET satici=?, satici_uygun=1 WHERE asin=?", (etiket, asin))
+        con.commit()
+
+
 # ---------------------------------------------------------------- görevler
 
 def takip_bul(cfg, tid):
@@ -123,7 +300,7 @@ def takip_bul(cfg, tid):
 
 
 def gorev_kontrol(tr, con, cfg, a, o, olaylar) -> bool:
-    ids = [t["id"] for t in cfg["takipler"] if t.get("beden") and t.get("aktif", True)]
+    ids = [t["id"] for t in cfg["takipler"] if (t.get("beden") or t.get("saat")) and t.get("aktif", True)]
     if not ids:
         return False
     sinir = (datetime.now() - timedelta(hours=o["kontrol_saat"])).isoformat(timespec="seconds")
@@ -137,8 +314,19 @@ def gorev_kontrol(tr, con, cfg, a, o, olaylar) -> bool:
     b = T.guvenli(T.urun_sayfasi, tr, r["asin"])
     if b:
         dset(con, f"hata:{r['asin']}", 0)
+        beden = r["beden"]
+        satici = None
+        if takip.get("saat"):
+            # Satış kutusundaki satıcı değişebilir; her kontrolde yeniden değerlendirilir
+            d = tr.page.evaluate(SAAT_JS)
+            s_ok, _, etiket = satici_degerlendir(tr, con, d, takip["saat"])
+            beden = f"{(r['beden'] or '').split(',')[0]}, satıcı {etiket or '?'}"
+            satici = (etiket, int(s_ok))
         T.kaydet(con, takip, a, olaylar, asin=r["asin"], parent=r["parent_asin"], baslik=b["baslik"],
-                 beden=r["beden"], fiyat=b["fiyat"], liste=b["liste"], stokta=b["stokta"])
+                 beden=beden, fiyat=b["fiyat"], liste=b["liste"], stokta=b["stokta"])
+        if satici:
+            con.execute("UPDATE urunler SET satici=?, satici_uygun=? WHERE asin=?", (*satici, r["asin"]))
+            con.commit()
         log(f"  kontrol: {b['baslik'][:45]} [{r['beden']}] {tl(b['fiyat'])} "
             f"{'stokta' if b['stokta'] else 'stok yok'}")
     else:
@@ -156,7 +344,7 @@ def gorev_arama(tr, con, cfg, a, o, olaylar) -> bool:
     for t in cfg["takipler"]:
         if not t.get("aktif", True):
             continue
-        saat = o["arama_saat_bedenli"] if t.get("beden") else o["arama_saat_bedensiz"]
+        saat = o["arama_saat_bedenli"] if (t.get("beden") or t.get("saat")) else o["arama_saat_bedensiz"]
         n = int(t.get("sayfa_sayisi", 3))
         for sorgu in t["aramalar"]:
             for s in range(1, n + 1):
@@ -191,10 +379,14 @@ def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
             dset(con, f"arama:{t['id']}:{sorgu}:{s2}", simdi_s())
         log(f"  arama '{sorgu}' s{s}: sonuç yok (sayfa: {sayfa_basligi})")
         return
-    if t.get("beden"):
+    if t.get("beden") or t.get("saat"):
         gun = int(t.get("yeniden_tarama_gun", 7))
+        ust = float(t["saat"]["fiyat_ust"]) if t.get("saat") else None
         eklenen = 0
         for r in sonuc:
+            fiyat = T.parse_price(r["fiyat"])
+            if ust is not None and fiyat is not None and fiyat > ust:
+                continue
             if T.baslik_uygun(r["baslik"], t) and not T.yakin_zamanda_tarandi(con, r["asin"], gun):
                 eklenen += con.execute("INSERT OR IGNORE INTO adaylar VALUES(?,?,?,?)",
                                        (r["asin"], t["id"], r["baslik"], simdi_s())).rowcount
@@ -225,12 +417,15 @@ def gorev_kesif(tr, con, cfg, a, o, olaylar) -> bool:
         con.execute("DELETE FROM adaylar WHERE asin=?", (r["asin"],))
         con.commit()
         t = takip_bul(cfg, r["takip_id"])
-        if t and t.get("beden") and not T.yakin_zamanda_tarandi(
+        if t and (t.get("beden") or t.get("saat")) and not T.yakin_zamanda_tarandi(
                 con, r["asin"], int(t.get("yeniden_tarama_gun", 7))):
             break
     log(f"  keşif: {r['baslik'][:60]}")
-    T.guvenli(T._kesfet, tr, con, t, a, olaylar, r["asin"], t["beden"],
-              int(t.get("yeniden_tarama_gun", 7)))
+    if t.get("saat"):
+        T.guvenli(_kesfet_saat, tr, con, t, a, olaylar, r["asin"])
+    else:
+        T.guvenli(T._kesfet, tr, con, t, a, olaylar, r["asin"], t["beden"],
+                  int(t.get("yeniden_tarama_gun", 7)))
     return True
 
 
@@ -279,7 +474,15 @@ def site_uret(con, cfg) -> None:
             continue
         rows = con.execute("SELECT * FROM urunler WHERE takip_id=? AND aktif=1 "
                            "ORDER BY stokta DESC, son_fiyat", (t["id"],)).fetchall()
-        parca.append(f"<h2>{e(t['ad'])} <small>({len(rows)})</small></h2>")
+        gizli = ""
+        if t.get("saat"):
+            ust = float(t["saat"]["fiyat_ust"])
+            tum = len(rows)
+            rows = [r for r in rows if r["satici_uygun"] != 0 and (not r["stokta"] or (r["son_fiyat"] or 0) <= ust)]
+            if tum > len(rows):
+                gizli = (f"<p><small>{tum - len(rows)} saat şu an gizli: fiyatı {tl(ust)} üstünde "
+                         "ya da satış kutusundaki satıcı ölçütü karşılamıyor. Koşul düzelince yeniden görünür.</small></p>")
+        parca.append(f"<h2>{e(t['ad'])} <small>({len(rows)})</small></h2>{gizli}")
         if not rows:
             parca.append("<p>Henüz ürün yok.</p>")
             continue
@@ -337,10 +540,12 @@ def main() -> None:
     log(f"Mod: {mod}, sayfa bütçesi: {o['sayfa_butcesi']}")
     con = T.db_baglan()
     con.executescript(EK_SCHEMA)
+    sema_guncelle(con)
     for tid in cfg.get("veri_sil") or []:
         veri_sil(con, tid)
     for t in cfg["takipler"]:
-        T.filtreyi_uygula(con, t)
+        if not t.get("saat"):
+            T.filtreyi_uygula(con, t)
 
     olaylar: list = []
     sonuc = "tamam"

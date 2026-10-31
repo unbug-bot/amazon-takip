@@ -87,6 +87,25 @@ takipler:
     yeniden_tarama_gun: 7
     hedef_fiyat: null
 
+  # ---- Saatler: yalnızca otomatik, safir camlı, bu markalardan, en fazla 18.000 TL.
+  # Ürün sayfasında otomatik mekanizma ve safir cam açıkça yazmıyorsa elenir.
+  # Satıcı: güvenilir_saticilar listesinde olmalı ya da Amazon satıcı puanı en az %90 olumlu olmalı.
+  - id: saat_otomatik_safir
+    ad: "Otomatik safir camlı saatler (en fazla 18.000 TL)"
+    aramalar: ["Seiko otomatik saat", "Citizen otomatik saat", "Orient otomatik saat",
+               "Lorus otomatik saat", "Alba otomatik saat"]
+    sayfa_sayisi: 2
+    baslikta_gerekli:
+      - ["seiko", "citizen", "orient", "lorus", "alba"]
+      - ["otomatik", "automatic", "automatik", "mekanik"]
+    baslikta_olmamali: ["quartz", "kuvars", "eco-drive", "eco drive", "solar", "yedek", "uyumlu"]
+    yeniden_tarama_gun: 7
+    saat:
+      markalar: ["Seiko", "Citizen", "Orient", "Lorus", "Alba"]
+      fiyat_ust: 18000
+      satici_min_olumlu: 90
+      guvenilir_saticilar: ["Amazon.com.tr"]   # bildiğin satıcı adlarını buraya ekle
+
 # Yalnızca GitHub (online) sürümü için. Saatte 2 çalışma x 8 sayfa = günde ~380 sayfa, güne yayılmış.
 online:
   sayfa_butcesi: 8            # bir çalışmada açılacak sayfa sayısı
