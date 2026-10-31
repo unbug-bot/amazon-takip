@@ -10,6 +10,9 @@ ayarlar:
     bot_token: ""
     chat_id: ""
 
+# Bu takiplerin eski kayıtları bir sonraki çalışmada silinir (tekrar çalışırsa iş yapmaz).
+veri_sil: [dior_parfum]
+
 takipler:
   # Erkek pantolon, bel 34 / boy 34. Beden etiketindeki sayılar tam olarak
   # [34, 34] ise eşleşir: "34/34", "W34 L34", "34W x 34L", "Bel 34 Boy 34".
@@ -29,19 +32,45 @@ takipler:
     yeniden_tarama_gun: 7     # 34/34'ü olmayan ürüne kaç günde bir yeniden bakılsın
     hedef_fiyat: null         # ör. 800 -> 800 TL ve altı ayrıca bildirilir
 
-  # Dior parfüm. Arama sonucu fiyatıyla takip edilir (ürün sayfası açılmaz).
-  - id: dior_parfum
-    ad: "Dior parfüm"
-    aramalar: ["Dior parfüm", "Dior eau de parfum", "Dior eau de toilette"]
-    markalar: ["Dior", "Christian Dior"]
-    baslikta_gerekli:
-      - ["dior"]
-      - ["parfüm", "parfum", "edp", "edt", "eau de", "kolonya", "cologne", "perfume", "fragrance"]
-    baslikta_olmamali: ["muadil", "esintili", "esansı", "inspired", "benzeri", "alternatif",
-                        "deo", "deodorant", "hair mist", "saç parfümü", "body lotion", "vücut losyonu",
-                        "body milk", "shower gel", "duş jeli", "after shave", "tıraş"]
-    sayfa_sayisi: 3
-    hedef_fiyat: null
+  # ---- Parfümler. Arama sonucu fiyatıyla takip edilir. Her ml ayrı satırdır.
+  # gerekli: başlıkta (boşluk ve kesme işaretleri yok sayılarak) hepsi geçmeli
+  # haric: bu kelimeler geçerse elenir (muadil, set, deo, EDT, cologne vb. zaten her zaman elenir)
+  # konsantrasyon edp: başlıkta EDP / Eau de Parfum yazmayan ilan alınmaz
+  - id: creed_aventus
+    ad: "Creed Aventus"
+    aramalar: ["Creed Aventus"]
+    sayfa_sayisi: 2
+    parfum: {gerekli: ["aventus"], haric: ["absolu", "for her", "kadın"], konsantrasyon: serbest}
+
+  - id: dior_sauvage_elixir
+    ad: "Dior Sauvage Elixir"
+    aramalar: ["Dior Sauvage Elixir"]
+    sayfa_sayisi: 2
+    parfum: {gerekli: ["dior", "sauvage", "elixir"], konsantrasyon: serbest}
+
+  - id: pdm_layton
+    ad: "Parfums de Marly Layton"
+    aramalar: ["Parfums de Marly Layton"]
+    sayfa_sayisi: 2
+    parfum: {gerekli: ["layton"], haric: ["exclusif"], konsantrasyon: serbest}
+
+  - id: ysl_la_nuit
+    ad: "YSL La Nuit de L'Homme Le Parfum"
+    aramalar: ["La Nuit de L'Homme Le Parfum"]
+    sayfa_sayisi: 2
+    parfum: {gerekli: ["la nuit de l homme", "le parfum"], haric: ["electrique", "intense", "frozen"], konsantrasyon: serbest}
+
+  - id: bleu_de_chanel
+    ad: "Bleu de Chanel EDP"
+    aramalar: ["Bleu de Chanel Eau de Parfum"]
+    sayfa_sayisi: 2
+    parfum: {gerekli: ["bleu de chanel"], haric: ["exclusif"], konsantrasyon: edp}
+
+  - id: jpg_le_male_elixir
+    ad: "Jean Paul Gaultier Le Male Elixir"
+    aramalar: ["Le Male Elixir"]
+    sayfa_sayisi: 2
+    parfum: {gerekli: ["le male", "elixir"], haric: ["absolu"], konsantrasyon: serbest}
 
   # Mavi Jeans gömlek, XXL. "Mavi" aynı zamanda renk olduğu için marka
   # ürün sayfasındaki marka satırından (bylineInfo) doğrulanır.
@@ -63,5 +92,5 @@ online:
   sayfa_butcesi: 8            # bir çalışmada açılacak sayfa sayısı
   bekleme_saniye: [20, 40]    # sayfalar arası bekleme
   kontrol_saat: 4             # takipteki pantolon/gömlek varyantı en geç kaç saatte bir kontrol edilsin
-  arama_saat_bedensiz: 6      # Dior arama sayfaları kaç saatte bir yenilensin
+  arama_saat_bedensiz: 6      # parfüm arama sayfaları kaç saatte bir yenilensin
   arama_saat_bedenli: 24      # pantolon/gömlek aramaları (yeni ürün keşfi) kaç saatte bir
