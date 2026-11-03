@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS durum(anahtar TEXT PRIMARY KEY, deger TEXT);
 CREATE TABLE IF NOT EXISTS adaylar(asin TEXT PRIMARY KEY, takip_id TEXT, baslik TEXT, eklenme TEXT);
 CREATE TABLE IF NOT EXISTS calismalar(ts TEXT, sayfa INTEGER, captcha INTEGER, sonuc TEXT);
 CREATE TABLE IF NOT EXISTS saticilar(id TEXT PRIMARY KEY, ad TEXT, oran REAL, kapsam TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS saat_elenen(asin TEXT PRIMARY KEY, takip_id TEXT, baslik TEXT, fiyat REAL, neden TEXT, ts TEXT);
 """
+SAAT_KURAL_SURUMU = "2"  # saat kuralları değişince önceden elenenler yeniden değerlendirilsin
 
 
 def sema_guncelle(con) -> None:
@@ -138,7 +140,7 @@ SAAT_JS = r"""() => {
     const td = tr.querySelectorAll('td');
     if (td.length >= 2) alanlar.push([temiz(td[0].textContent), temiz(td[1].textContent)]);
   });
-  document.querySelectorAll('#productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr, table.prodDetTable tr')
+  document.querySelectorAll('#productDetails_techSpec_section_1 tr, #productDetails_techSpec_section_2 tr, #productDetails_detailBullets_sections1 tr, #productDetails_db_sections tr, #technicalSpecifications_section_1 tr, table.prodDetTable tr, table.a-keyvalue tr')
     .forEach(tr => { const th = tr.querySelector('th'), td = tr.querySelector('td');
       if (th && td) alanlar.push([temiz(th.textContent), temiz(td.textContent)]); });
   document.querySelectorAll('#detailBullets_feature_div li').forEach(li => {
@@ -168,11 +170,16 @@ SATICI_JS = r"""() => {
   return {tablo, metin: document.body ? document.body.innerText.slice(0, 15000) : ''};
 }"""
 
-OTOMATIK = ("otomatik", "automatic", "automatik", "self winding", "kendinden kurmalı", "kendi kendini kuran")
+OTOMATIK = ("otomatik", "automatic", "automatik", "automatisch", "self winding", "kendinden kurmalı",
+            "kendi kendini kuran", "powermatic")
+HAREKET_ALAN = ("hareket", "movement", "mekanizma", "güç kaynağı", "guc kaynagi", "power source", "kalibre", "caliber", "calibre")
+CAM_ALAN = ("cam", "pencere", "crystal", "window", "kristal", "lens")
 PILLI = ("kuvars", "quartz", "eco drive", "ecodrive", "solar", "güneş enerjili", "kinetic")
 SAFIR = ("safir", "sapphire")
 KAPLAMA_DESEN = r"(safir|sapphire)\s*(kaplama|kaplamalı|coated|coating)|(kaplama|kaplamalı|coated)\s*(safir|sapphire)"
-SAFIR_DESEN = r"(safir|sapphire)\s*(cam|camı|camlı|kristal|crystal|glass)|(cam|camı|kristal|crystal|glass)\s*(safir|sapphire)"
+# "safir cam", "safir kristal", "safir çizilmez cam", "sapphire crystal", "cam: safir" (araya en fazla 2 kelime)
+SAFIR_DESEN = (r"(safir|sapphire)(\s+\S+){0,2}\s+(cam\w*|kristal\w*|crystal|glass)"
+               r"|(cam\w*|kristal\w*|crystal|glass)(\s+\S+){0,2}\s+(safir|sapphire)")
 BASKA_CAM = ("hardlex", "mineral", "akrilik", "acrylic", "pleksi")
 
 
@@ -204,11 +211,11 @@ def saat_dogrula(b: dict, d: dict, k: dict):
     tum = S(b["baslik"] + " " + " ".join(v for _, v in d["alanlar"]) + " " + " ".join(d["maddeler"]))
     if _var(tum, PILLI):
         return False, "kuvars/pilli/solar ifadesi var", marka
-    hareket = S(_alan(d, "hareket", "movement", "mekanizma"))
+    hareket = S(_alan(d, *HAREKET_ALAN))
     if not (_var(hareket, OTOMATIK) or _var(baslik_madde, OTOMATIK)):
         return False, "otomatik olduğu yazmıyor", marka
     # cam
-    cam = S(_alan(d, "cam", "pencere", "crystal", "window", "kristal"))
+    cam = S(_alan(d, *CAM_ALAN))
     if cam and (_var(cam, SAFIR) or _var(cam, BASKA_CAM)):
         if re.search(KAPLAMA_DESEN, cam) or not _var(cam, SAFIR) or _var(cam, BASKA_CAM):
             return False, f"cam: {cam[:30]}", marka
@@ -287,6 +294,12 @@ def _kesfet_saat(tr, con, t, a, olaylar, asin) -> None:
     T.taranma_kaydi(con, asin, t["id"], ok)
     log(f"     saat: {'UYGUN' if ok else 'elendi, ' + neden} | {marka or '?'} | {tl(b['fiyat'])}")
     if ok:
+        con.execute("DELETE FROM saat_elenen WHERE asin=?", (asin,))
+    else:
+        con.execute("INSERT OR REPLACE INTO saat_elenen VALUES(?,?,?,?,?,?)",
+                    (asin, t["id"], b["baslik"], b["fiyat"], neden, simdi_s()))
+    con.commit()
+    if ok:
         T.kaydet(con, t, a, olaylar, asin=asin, parent=None, baslik=b["baslik"],
                  beden=f"{marka}, satıcı {etiket}", fiyat=b["fiyat"], liste=b["liste"], stokta=b["stokta"])
         con.execute("UPDATE urunler SET satici=?, satici_uygun=1 WHERE asin=?", (etiket, asin))
@@ -344,7 +357,8 @@ def gorev_arama(tr, con, cfg, a, o, olaylar) -> bool:
     for t in cfg["takipler"]:
         if not t.get("aktif", True):
             continue
-        saat = o["arama_saat_bedenli"] if (t.get("beden") or t.get("saat")) else o["arama_saat_bedensiz"]
+        saat = t.get("arama_saat") or (o["arama_saat_bedenli"] if (t.get("beden") or t.get("saat"))
+                                         else o["arama_saat_bedensiz"])
         n = int(t.get("sayfa_sayisi", 3))
         for sorgu in t["aramalar"]:
             for s in range(1, n + 1):
@@ -382,16 +396,21 @@ def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
     if t.get("beden") or t.get("saat"):
         gun = int(t.get("yeniden_tarama_gun", 7))
         ust = float(t["saat"]["fiyat_ust"]) if t.get("saat") else None
-        eklenen = 0
+        eklenen, pahali, baslik_red, eski = 0, 0, 0, 0
         for r in sonuc:
             fiyat = T.parse_price(r["fiyat"])
             if ust is not None and fiyat is not None and fiyat > ust:
-                continue
-            if T.baslik_uygun(r["baslik"], t) and not T.yakin_zamanda_tarandi(con, r["asin"], gun):
+                pahali += 1
+            elif not T.baslik_uygun(r["baslik"], t):
+                baslik_red += 1
+            elif T.yakin_zamanda_tarandi(con, r["asin"], gun):
+                eski += 1
+            else:
                 eklenen += con.execute("INSERT OR IGNORE INTO adaylar VALUES(?,?,?,?)",
                                        (r["asin"], t["id"], r["baslik"], simdi_s())).rowcount
         con.commit()
-        log(f"  arama '{sorgu}' s{s}: {len(sonuc)} sonuç, {eklenen} yeni aday")
+        log(f"  arama '{sorgu}' s{s}: {len(sonuc)} sonuç, {eklenen} yeni aday "
+            f"({pahali} fiyat üstü, {baslik_red} başlıktan elendi, {eski} zaten bakıldı)")
     else:
         kayit = 0
         for r in sonuc:
@@ -461,6 +480,21 @@ def _degisim(r, d) -> str:
     return f'<span class="z">↑ %{yuzde}</span>'
 
 
+def _elenen_tablosu(con, t) -> str:
+    e = html.escape
+    rows = con.execute("SELECT * FROM saat_elenen WHERE takip_id=? ORDER BY ts DESC LIMIT 80", (t["id"],)).fetchall()
+    toplam = con.execute("SELECT COUNT(*) FROM saat_elenen WHERE takip_id=?", (t["id"],)).fetchone()[0]
+    if not rows:
+        return ""
+    satir = "".join(
+        f"<tr><td>{tl(r['fiyat'])}</td><td class='u'>{e(r['neden'])}</td>"
+        f"<td class='u'><a href='{T.BASE}/dp/{r['asin']}'>{e((r['baslik'] or r['asin'])[:90])}</a></td></tr>"
+        for r in rows)
+    return (f"<details><summary>Elenen saatler ve nedenleri ({toplam})</summary><div class='t'><table>"
+            f"<thead><tr><th>Fiyat</th><th class='u'>Neden</th><th class='u'>Ürün</th></tr></thead>"
+            f"<tbody>{satir}</tbody></table></div></details>")
+
+
 def site_uret(con, cfg) -> None:
     SITE.mkdir(exist_ok=True)
     e = html.escape
@@ -485,6 +519,8 @@ def site_uret(con, cfg) -> None:
         parca.append(f"<h2>{e(t['ad'])} <small>({len(rows)})</small></h2>{gizli}")
         if not rows:
             parca.append("<p>Henüz ürün yok.</p>")
+            if t.get("saat"):
+                parca.append(_elenen_tablosu(con, t))
             continue
         parca.append('<div class="t"><table><thead><tr><th>Son fiyat</th><th>Değişim</th>'
                      '<th>En ucuz</th><th>En pahalı</th><th class="u">Ürün</th></tr></thead><tbody>')
@@ -497,6 +533,8 @@ def site_uret(con, cfg) -> None:
                          f"<td>{tl(d['min']) if d else '-'}</td><td>{tl(d['max']) if d else '-'}</td>"
                          f'<td class="u"><a href="{e(url)}">{e(r["baslik"] or r["asin"])}</a>{ek}</td></tr>')
         parca.append("</tbody></table></div>")
+        if t.get("saat"):
+            parca.append(_elenen_tablosu(con, t))
     if son:
         parca.append(f"<p><small>Son çalışma: {e(son['ts'][:16].replace('T', ' '))}, "
                      f"{son['sayfa']} sayfa, sonuç: {e(son['sonuc'])}</small></p>")
@@ -541,6 +579,14 @@ def main() -> None:
     con = T.db_baglan()
     con.executescript(EK_SCHEMA)
     sema_guncelle(con)
+    if dget(con, "saat_kural_surumu") != SAAT_KURAL_SURUMU:
+        for t in cfg["takipler"]:
+            if t.get("saat"):
+                con.execute("DELETE FROM taranan WHERE takip_id=? AND beden_var=0", (t["id"],))
+                con.execute("DELETE FROM saat_elenen WHERE takip_id=?", (t["id"],))
+                con.execute("DELETE FROM durum WHERE anahtar LIKE ?", (f"arama:{t['id']}:%",))
+        dset(con, "saat_kural_surumu", SAAT_KURAL_SURUMU)
+        log("Saat kuralları güncellendi; önceden elenen saatler yeniden değerlendirilecek")
     for tid in cfg.get("veri_sil") or []:
         veri_sil(con, tid)
     for t in cfg["takipler"]:

@@ -557,6 +557,10 @@ def _kesfet(tr, con, takip, ayarlar, olaylar, asin, kural, gun) -> None:
     log(f"     {len(varyantlar)} varyant, aranan beden: {len(eslesen)}{kaynak}")
     taranma_kaydi(con, asin, takip["id"], bool(eslesen))
     taranma_kaydi(con, parent, takip["id"], bool(eslesen))
+    # Aynı ürünün diğer renk/beden ilanları da tarandı sayılsın; kuyruktaysa ayrıca açılmasın
+    for kardes in varyantlar:
+        if kardes not in (asin, parent):
+            taranma_kaydi(con, kardes, takip["id"], kardes in eslesen)
     con.commit()
 
     for cocuk, etiket in eslesen.items():

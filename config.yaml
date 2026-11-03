@@ -87,24 +87,28 @@ takipler:
     yeniden_tarama_gun: 7
     hedef_fiyat: null
 
-  # ---- Saatler: yalnızca otomatik, safir camlı, bu markalardan, en fazla 18.000 TL.
-  # Ürün sayfasında otomatik mekanizma ve safir cam açıkça yazmıyorsa elenir.
-  # Satıcı: güvenilir_saticilar listesinde olmalı ya da Amazon satıcı puanı en az %90 olumlu olmalı.
+  # ---- Saatler: yalnızca otomatik, safir camlı, bu markalardan, en fazla 38.000 TL.
+  # Arama aşamasında yalnızca marka, fiyat ve kuvars/solar kelimesine bakılır.
+  # Otomatik mekanizma ve safir cam ürün sayfasında doğrulanır; emin olunamazsa elenir.
+  # Satıcı: guvenilir_saticilar listesinde olmalı ya da Amazon satıcı puanı en az %90 olumlu olmalı.
   - id: saat_otomatik_safir
-    ad: "Otomatik safir camlı saatler (en fazla 28.000 TL)"
+    ad: "Otomatik safir camlı saatler (en fazla 38.000 TL)"
     aramalar: ["Seiko otomatik saat", "Citizen otomatik saat", "Orient otomatik saat",
                "Lorus otomatik saat", "Alba otomatik saat", "Bulova otomatik saat",
                "Tissot otomatik saat", "Certina otomatik saat", "Hamilton otomatik saat",
-               "Glycine otomatik saat", "Mido otomatik saat"]
+               "Glycine otomatik saat", "Mido otomatik saat",
+               "Citizen Tsuyosa", "Orient Star", "Seiko Presage", "Seiko Prospex",
+               "Tissot PRX Powermatic", "Certina DS Powermatic", "Hamilton Khaki Field Auto",
+               "Mido Multifort", "Glycine Combat"]
     sayfa_sayisi: 2
+    arama_saat: 72            # saat aramaları 3 günde bir yenilenir
     baslikta_gerekli:
       - ["seiko", "citizen", "orient", "lorus", "alba", "bulova", "tissot", "certina", "hamilton", "glycine", "mido"]
-      - ["otomatik", "automatic", "automatik", "mekanik", "powermatic", "auto"]
     baslikta_olmamali: ["quartz", "kuvars", "eco-drive", "eco drive", "solar", "yedek", "uyumlu"]
     yeniden_tarama_gun: 7
     saat:
       markalar: ["Seiko", "Citizen", "Orient", "Lorus", "Alba", "Bulova", "Tissot", "Certina", "Hamilton", "Glycine", "Mido"]
-      fiyat_ust: 48000
+      fiyat_ust: 38000
       satici_min_olumlu: 90
       guvenilir_saticilar: ["Amazon.com.tr"]   # bildiğin satıcı adlarını buraya ekle
 
