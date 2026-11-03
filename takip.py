@@ -429,8 +429,11 @@ def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
 
 
 def gorev_kesif(tr, con, cfg, a, o, olaylar) -> bool:
+    ids = [t["id"] for t in cfg["takipler"] if t.get("aktif", True)]
     while True:
-        r = con.execute("SELECT asin,takip_id,baslik FROM adaylar ORDER BY eklenme LIMIT 1").fetchone()
+        # Yalnızca bu çalışmadaki takiplerin adayları; diğerlerinin adayları kuyrukta kalır
+        r = con.execute(f"SELECT asin,takip_id,baslik FROM adaylar WHERE takip_id IN ({','.join('?' * len(ids))}) "
+                        "ORDER BY eklenme LIMIT 1", ids).fetchone()
         if not r:
             return False
         con.execute("DELETE FROM adaylar WHERE asin=?", (r["asin"],))
@@ -553,6 +556,15 @@ def site_uret(con, cfg) -> None:
 
 # ---------------------------------------------------------------- ana akış
 
+def grup_uyar(t: dict, grup: str) -> bool:
+    """Elle çalıştırmada seçilen grup: hepsi, saat, parfum, pantolon, gomlek."""
+    if grup in ("", "hepsi"):
+        return True
+    if grup in ("saat", "parfum"):
+        return bool(t.get(grup))
+    return grup in t["id"]
+
+
 def veri_sil(con, tid: str) -> None:
     """config'deki veri_sil listesindeki takibin tüm kayıtlarını siler (tekrar çalışırsa iş yapmaz)."""
     n = con.execute("SELECT COUNT(*) FROM urunler WHERE takip_id=?", (tid,)).fetchone()[0]
@@ -575,7 +587,8 @@ def main() -> None:
         o["sayfa_butcesi"] = min(int(elle), MAX_ELLE_BUTCE)
     mod = os.environ.get("MOD", "").strip() or "normal"
     sira = SIRA_KESIF if mod == "kesif" else SIRA
-    log(f"Mod: {mod}, sayfa bütçesi: {o['sayfa_butcesi']}")
+    grup = os.environ.get("GRUP", "").strip().lower() or "hepsi"
+    log(f"Mod: {mod}, grup: {grup}, sayfa bütçesi: {o['sayfa_butcesi']}")
     con = T.db_baglan()
     con.executescript(EK_SCHEMA)
     sema_guncelle(con)
@@ -598,12 +611,13 @@ def main() -> None:
     tr = None
     try:
         tr = OnlineTarayici(o)
+        is_cfg = {**cfg, "takipler": [t for t in cfg["takipler"] if grup_uyar(t, grup)]}
         while tr.kalan() > 0:
             yapildi = False
             for tip in sira:
                 if tr.kalan() <= 0:
                     break
-                yapildi = GOREVLER[tip](tr, con, cfg, a, o, olaylar) or yapildi
+                yapildi = GOREVLER[tip](tr, con, is_cfg, a, o, olaylar) or yapildi
             if not yapildi:
                 log("Yapılacak iş kalmadı.")
                 break
