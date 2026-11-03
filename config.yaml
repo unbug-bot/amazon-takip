@@ -104,7 +104,7 @@ takipler:
     yeniden_tarama_gun: 7
     saat:
       markalar: ["Seiko", "Citizen", "Orient", "Lorus", "Alba", "Bulova", "Tissot", "Certina", "Hamilton", "Glycine", "Mido"]
-      fiyat_ust: 28000
+      fiyat_ust: 48000
       satici_min_olumlu: 90
       guvenilir_saticilar: ["Amazon.com.tr"]   # bildiğin satıcı adlarını buraya ekle
 
