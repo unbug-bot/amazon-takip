@@ -12,6 +12,11 @@ on:
       sayfa:
         description: 'Bu çalışmada açılacak sayfa sayısı (normal 8, en fazla 120)'
         default: '8'
+      grup:
+        description: 'Hangi takipler çalışsın'
+        type: choice
+        options: [hepsi, saat, parfum, pantolon, gomlek]
+        default: hepsi
 
 permissions:
   contents: write
@@ -56,6 +61,7 @@ jobs:
         env:
           MOD: ${{ inputs.mod }}
           SAYFA_BUTCESI: ${{ inputs.sayfa }}
+          GRUP: ${{ inputs.grup }}
         run: python takip.py
 
       - name: Veriyi kaydet
