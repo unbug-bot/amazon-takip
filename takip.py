@@ -27,6 +27,7 @@ ONLINE_VARSAYILAN = {
     "sayfa_butcesi": 8,
     "bekleme_saniye": [20, 40],
     "kontrol_saat": 4,
+    "kontrol_azami_saat": 24,   # keşif modunda bile hiçbir ürün bundan uzun süre kontrolsüz kalmaz
     "arama_saat_bedensiz": 6,
     "arama_saat_bedenli": 24,
 }
@@ -399,8 +400,44 @@ def gorev_kesif(tr, con, cfg, a, o, olaylar) -> bool:
 
 GOREVLER = {"kontrol": gorev_kontrol, "arama": gorev_arama, "kesif": gorev_kesif}
 SIRA = ["kontrol", "kontrol", "arama", "kesif"]
-SIRA_KESIF = ["arama", "kesif"]  # elle "kesif" modu: kontrol yok, önce aramalar ve yeni ürünler
 MAX_ELLE_BUTCE = 120
+
+
+def calis_normal(tr, con, cfg, a, o, olaylar) -> None:
+    """Kontrol, arama ve keşif dönüşümlü."""
+    while tr.kalan() > 0:
+        yapildi = False
+        for tip in SIRA:
+            if tr.kalan() <= 0:
+                break
+            yapildi = GOREVLER[tip](tr, con, cfg, a, o, olaylar) or yapildi
+        if not yapildi:
+            log("Yapılacak iş kalmadı.")
+            return
+
+
+def calis_kesif(tr, con, cfg, a, o, olaylar) -> None:
+    """Keşif öncelikli, takibi durdurmadan:
+    1) uzun süredir (kontrol_azami_saat) bakılmamış ürünler önce kontrol edilir,
+    2) sonra vakti gelmiş aramalar ve keşif kuyruğu bitene kadar keşif yapılır,
+    3) keşif biter bitmez kalan sayfalarla normal kontrol sürer."""
+    acil = {**o, "kontrol_saat": o["kontrol_azami_saat"]}
+    n = 0
+    while tr.kalan() > 0 and gorev_kontrol(tr, con, cfg, a, acil, olaylar):
+        n += 1
+    if n:
+        log(f"  {n} ürün {o['kontrol_azami_saat']} saattir kontrol edilmemişti, önce onlara bakıldı")
+    while tr.kalan() > 0:
+        yapildi = gorev_arama(tr, con, cfg, a, o, olaylar)
+        if tr.kalan() > 0:
+            yapildi = gorev_kesif(tr, con, cfg, a, o, olaylar) or yapildi
+        if not yapildi:
+            log("Keşif bitti; kalan sayfalar fiyat/stok kontrolüne gidiyor")
+            break
+    while tr.kalan() > 0:
+        if not gorev_kontrol(tr, con, cfg, a, o, olaylar):
+            log("Yapılacak iş kalmadı.")
+            return
 
 
 # ---------------------------------------------------------------- web sayfası (sade)
@@ -532,7 +569,6 @@ def main() -> None:
     if elle.isdigit() and int(elle) > 0:
         o["sayfa_butcesi"] = min(int(elle), MAX_ELLE_BUTCE)
     mod = os.environ.get("MOD", "").strip() or "normal"
-    sira = SIRA_KESIF if mod == "kesif" else SIRA
     grup = os.environ.get("GRUP", "").strip().lower() or "hepsi"
     log(f"Mod: {mod}, grup: {grup}, sayfa bütçesi: {o['sayfa_butcesi']}")
     con = T.db_baglan()
@@ -572,15 +608,7 @@ def main() -> None:
     try:
         tr = OnlineTarayici(o)
         is_cfg = {**cfg, "takipler": [t for t in cfg["takipler"] if grup_uyar(t, grup)]}
-        while tr.kalan() > 0:
-            yapildi = False
-            for tip in sira:
-                if tr.kalan() <= 0:
-                    break
-                yapildi = GOREVLER[tip](tr, con, is_cfg, a, o, olaylar) or yapildi
-            if not yapildi:
-                log("Yapılacak iş kalmadı.")
-                break
+        (calis_kesif if mod == "kesif" else calis_normal)(tr, con, is_cfg, a, o, olaylar)
     except T.DogrulamaGerekli as ex:
         sonuc = "captcha"
         log(f"CAPTCHA yeniden denemede de çıktı ({ex}); bu çalışma burada bitti.")
