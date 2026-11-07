@@ -1,11 +1,11 @@
 name: amazon-takip
 on:
   schedule:
-    - cron: '7,37 * * * *'   # saatte 2 kez (GitHub yoğunken birkaç dakika gecikebilir)
+    - cron: '17 */4 * * *'   # 4 saatte bir: Türkiye saatiyle 03:17, 07:17, 11:17, 15:17, 19:17, 23:17
   workflow_dispatch:
     inputs:
       mod:
-        description: 'normal ya da kesif (kesif = kontrol yapmadan önce tüm aramalar ve yeni ürünler)'
+        description: 'kesif = önce yeni ürün keşfi, bitince fiyat/stok kontrolü; normal = dönüşümlü'
         type: choice
         options: [normal, kesif]
         default: normal
@@ -59,8 +59,9 @@ jobs:
 
       - name: Tara
         env:
-          MOD: ${{ inputs.mod }}
-          SAYFA_BUTCESI: ${{ inputs.sayfa }}
+          # Zamanlanmış çalışmalarda form yok: keşif öncelikli mod, 120 sayfa
+          MOD: ${{ inputs.mod || 'kesif' }}
+          SAYFA_BUTCESI: ${{ inputs.sayfa || '120' }}
           GRUP: ${{ inputs.grup }}
         run: python takip.py
 
