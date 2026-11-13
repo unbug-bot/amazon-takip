@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """
-GitHub Actions'ta çalışan yavaş Amazon.com.tr takibi.
+Amazon.com.tr takip çalıştırıcısı. Hem GitHub Actions hem Mac (mac.py üzerinden) bunu çalıştırır.
 
-Her çalıştırma küçük bir sayfa bütçesi (varsayılan 8) kullanır ve işleri sırayla yapar:
-  kontrol : takipteki beden varyantlarının fiyat/stok kontrolü (en eskisi önce)
-  arama   : arama sayfaları (Dior fiyatları buradan güncellenir; pantolon/gömlek için aday toplar)
-  kesif   : aday ürün sayfasını açıp aranan bedeni arar
-Ayrıştırma ve kayıt mantığı tracker.py'den gelir. Sonunda site/index.html üretilir.
+Ortam değişkenleri:
+  ORTAM          github (varsayılan) ya da mac
+  MOD            kesif: önce gecikmiş kontroller, sonra arama ve keşif, keşif bitince kontrol
+                 normal: kontrol, arama ve keşif dönüşümlü
+                 sayfa: Amazon'a bağlanmadan yalnızca web sayfasını üretir
+  SAYFA_BUTCESI  bu çalışmada açılacak en fazla sayfa
+  GRUP           hepsi | saat | parfum | pantolon | gomlek
+  GORUNUR        (yalnızca Mac) 0 ise tarayıcı penceresi açılmaz
+
+Görevler:
+  kontrol : takipteki ürünlerin fiyat/stok kontrolü (en eskisi önce)
+  arama   : arama sayfaları (parfüm fiyatları buradan güncellenir; diğerleri için aday toplar)
+  kesif   : aday ürün sayfasını açıp beden / saat şartlarını doğrular
+Veritabanı (veri.db) senkron.py ile GitHub'daki tek kopyadan alınır ve geri yazılır.
 """
 from __future__ import annotations
 
@@ -22,6 +31,7 @@ from tracker import log, tl
 
 OTURUM = T.ROOT / "oturum.json"
 SITE = T.ROOT / "site"
+PROFIL = T.ROOT / "tarayici_profili"   # yalnızca Mac: kalıcı tarayıcı profili
 
 ONLINE_VARSAYILAN = {
     "sayfa_butcesi": 8,
@@ -30,6 +40,10 @@ ONLINE_VARSAYILAN = {
     "kontrol_azami_saat": 24,   # keşif modunda bile hiçbir ürün bundan uzun süre kontrolsüz kalmaz
     "arama_saat_bedensiz": 6,
     "arama_saat_bedenli": 24,
+}
+MAC_VARSAYILAN = {
+    "bekleme_saniye": [8, 15],   # Mac ev internetinde çalıştığı için daha kısa bekleyebilir
+    "azami_sayfa": 500,          # Mac'te elle başlatılan bir çalışmanın üst sınırı
 }
 
 EK_SCHEMA = """
@@ -124,6 +138,68 @@ class OnlineTarayici:
     def kapat(self) -> None:
         for f in (lambda: self.ctx.storage_state(path=str(OTURUM)),
                   self.ctx.close, self.tarayici.close, self.pw.stop):
+            try:
+                f()
+            except Exception:
+                pass
+
+
+def mac_bildirim(baslik: str, mesaj: str) -> None:
+    import subprocess
+    esc = lambda x: x.replace("\\", "\\\\").replace('"', '\\"')
+    try:
+        subprocess.run(["osascript", "-e", f'display notification "{esc(mesaj)}" with title "{esc(baslik)}" '
+                        'sound name "Glass"'], check=False, timeout=10)
+    except Exception:
+        pass
+
+
+class MacTarayici(OnlineTarayici):
+    """Mac: kalıcı profil, görünür pencere. CAPTCHA çıkarsa çözmeni bekler (en fazla 15 dk)."""
+
+    def __init__(self, o: dict, gorunur: bool = True):
+        from playwright.sync_api import sync_playwright
+        self.o = o
+        self.butce = int(o["sayfa_butcesi"])
+        self.istek = 0
+        self.captcha = 0
+        self.gorunur = gorunur
+        self.pw = sync_playwright().start()
+        self.ctx = self.pw.chromium.launch_persistent_context(
+            str(PROFIL), headless=not gorunur, locale="tr-TR", timezone_id="Europe/Istanbul",
+            viewport={"width": 1366, "height": 900})
+        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+
+    def _captcha_mi(self) -> bool:
+        try:
+            return super()._captcha_mi()
+        except Exception:  # sayfa o an değişiyorsa
+            return True
+
+    def git(self, url: str) -> None:
+        self._yukle(url)
+        if self._captcha_mi():
+            self.captcha += 1
+            if not self.gorunur:
+                raise T.DogrulamaGerekli(url)
+            log("  CAPTCHA: açık tarayıcı penceresinde doğrulamayı çöz; program bekliyor (en fazla 15 dk)")
+            mac_bildirim("Amazon doğrulama istiyor", "Açık tarayıcı penceresinde doğrulamayı çöz")
+            bitis = time.time() + 900
+            while self._captcha_mi():
+                if time.time() > bitis:
+                    raise T.DogrulamaGerekli(url)
+                time.sleep(3)
+            log("  CAPTCHA çözüldü, devam ediliyor")
+            self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        try:
+            btn = self.page.query_selector("#sp-cc-accept")
+            if btn:
+                btn.click(timeout=3000)
+        except Exception:
+            pass
+
+    def kapat(self) -> None:
+        for f in (self.ctx.close, self.pw.stop):
             try:
                 f()
             except Exception:
@@ -400,7 +476,7 @@ def gorev_kesif(tr, con, cfg, a, o, olaylar) -> bool:
 
 GOREVLER = {"kontrol": gorev_kontrol, "arama": gorev_arama, "kesif": gorev_kesif}
 SIRA = ["kontrol", "kontrol", "arama", "kesif"]
-MAX_ELLE_BUTCE = 120
+GITHUB_AZAMI_SAYFA = 120
 
 
 def calis_normal(tr, con, cfg, a, o, olaylar) -> None:
@@ -522,7 +598,7 @@ def site_uret(con, cfg) -> None:
         if t.get("saat"):
             parca.append(_elenen_tablosu(con, t))
     if son:
-        parca.append(f"<p><small>Son çalışma: {e(son['ts'][:16].replace('T', ' '))}, "
+        parca.append(f"<p><small>Son tarama: {e(son['ts'][:16].replace('T', ' '))}, "
                      f"{son['sayfa']} sayfa, sonuç: {e(son['sonuc'])}</small></p>")
     css = (":root{color-scheme:light dark}body{font-family:-apple-system,sans-serif;max-width:1100px;"
            "margin:0 auto;padding:12px;line-height:1.45}.t{overflow-x:auto}"
@@ -563,17 +639,27 @@ def veri_sil(con, tid: str) -> None:
 def main() -> None:
     cfg = T.ayarlari_yukle()
     a = cfg["ayarlar"]
+    ortam = os.environ.get("ORTAM", "").strip().lower() or "github"
     o = {**ONLINE_VARSAYILAN, **(cfg.get("online") or {})}
-    # Elle başlatılan çalışmada GitHub'daki "Run workflow" kutusundan gelen değerler
+    azami = GITHUB_AZAMI_SAYFA
+    if ortam == "mac":
+        m = {**MAC_VARSAYILAN, **(cfg.get("mac") or {})}
+        o["bekleme_saniye"] = m["bekleme_saniye"]
+        azami = int(m["azami_sayfa"])
     elle = os.environ.get("SAYFA_BUTCESI", "").strip()
     if elle.isdigit() and int(elle) > 0:
-        o["sayfa_butcesi"] = min(int(elle), MAX_ELLE_BUTCE)
+        o["sayfa_butcesi"] = min(int(elle), azami)
     mod = os.environ.get("MOD", "").strip() or "normal"
     grup = os.environ.get("GRUP", "").strip().lower() or "hepsi"
-    log(f"Mod: {mod}, grup: {grup}, sayfa bütçesi: {o['sayfa_butcesi']}")
     con = T.db_baglan()
     con.executescript(EK_SCHEMA)
     sema_guncelle(con)
+    if mod == "sayfa":
+        log("Mod: sayfa (Amazon'a bağlanılmadı, yalnızca sayfa üretildi)")
+        site_uret(con, cfg)
+        con.close()
+        return
+    log(f"Ortam: {ortam}, mod: {mod}, grup: {grup}, sayfa bütçesi: {o['sayfa_butcesi']}")
     surum = dget(con, "saat_kural_surumu") or "1"
     if surum < SAAT_KURAL_SURUMU:
         for t in cfg["takipler"]:
@@ -606,7 +692,10 @@ def main() -> None:
     sonuc = "tamam"
     tr = None
     try:
-        tr = OnlineTarayici(o)
+        if ortam == "mac":
+            tr = MacTarayici(o, gorunur=os.environ.get("GORUNUR", "1").strip() != "0")
+        else:
+            tr = OnlineTarayici(o)
         is_cfg = {**cfg, "takipler": [t for t in cfg["takipler"] if grup_uyar(t, grup)]}
         (calis_kesif if mod == "kesif" else calis_normal)(tr, con, is_cfg, a, o, olaylar)
     except T.DogrulamaGerekli as ex:
@@ -614,6 +703,9 @@ def main() -> None:
         log(f"CAPTCHA yeniden denemede de çıktı ({ex}); bu çalışma burada bitti.")
     except T.LimitAsildi:
         sonuc = "limit"
+    except KeyboardInterrupt:
+        sonuc = "durduruldu"
+        log("Durduruldu (Ctrl+C); buraya kadar bulunanlar kaydedildi.")
     except Exception as ex:
         sonuc = "hata"
         log(f"HATA: {ex!r}")
@@ -621,7 +713,7 @@ def main() -> None:
         if tr:
             tr.kapat()
         con.execute("INSERT INTO calismalar VALUES(?,?,?,?)",
-                    (simdi_s(), tr.istek if tr else 0, tr.captcha if tr else 0, sonuc))
+                    (simdi_s(), tr.istek if tr else 0, tr.captcha if tr else 0, f"{sonuc} ({ortam})"))
         con.commit()
         log(f"Bitti: {tr.istek if tr else 0} sayfa, {tr.captcha if tr else 0} CAPTCHA, sonuç: {sonuc}")
     site_uret(con, cfg)

@@ -1,38 +1,22 @@
 #!/usr/bin/env python3
 """
-Amazon.com.tr indirim ve stok takipçisi (macOS).
-
-Komutlar:
-  hazirla               Tarayıcıyı görünür açar: çerezleri kabul et, doğrulama çıkarsa çöz.
-  calistir [--sadece ID] [--goster]
-                        Takipleri tarar, değişiklikleri bildirir.
-  rapor [--limit N]     Takip edilen ürünleri listeler.
-  bildirim-test         Bildirim kanallarını dener.
+Ortak kütüphane: ayrıştırma (fiyat, beden, parfüm), Amazon sayfa okuma ve veritabanı kaydı.
+Hem GitHub (takip.py) hem Mac (mac.py -> takip.py) bu dosyayı kullanır. Tek başına çalıştırılmaz.
 """
 from __future__ import annotations
 
-import argparse
 import html as htmllib
 import json
-import os
-import random
 import re
-import shutil
 import sqlite3
-import subprocess
-import sys
-import time
 import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.yaml"
 DB_PATH = ROOT / "veri.db"
-PROFILE_DIR = ROOT / "tarayici_profili"
 LOG_PATH = ROOT / "takip.log"
-LOCK_PATH = ROOT / ".calisiyor.lock"
 BASE = "https://www.amazon.com.tr"
 
 STOK_YOK_IFADELERI = ("mevcut değil", "stokta yok", "tükendi", "currently unavailable")
@@ -294,47 +278,9 @@ VARYANT_JS = r"""
 """
 
 
-# ---------------------------------------------------------------- tarayıcı
+# ---------------------------------------------------------------- sayfa okuma
 
-class Tarayici:
-    def __init__(self, ayarlar: dict, headless: bool):
-        from playwright.sync_api import sync_playwright
-        self.ayarlar = ayarlar
-        self.istek = 0
-        self.pw = sync_playwright().start()
-        self.ctx = self.pw.chromium.launch_persistent_context(
-            str(PROFILE_DIR), headless=headless, locale="tr-TR",
-            timezone_id="Europe/Istanbul", viewport={"width": 1366, "height": 900},
-        )
-        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
-
-    def git(self, url: str) -> None:
-        if self.istek >= int(self.ayarlar["max_sayfa_yukleme"]):
-            raise LimitAsildi()
-        if self.istek:
-            a, b = self.ayarlar["bekleme_saniye"]
-            time.sleep(random.uniform(a, b))
-        self.istek += 1
-        self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        if self.page.query_selector('form[action*="validateCaptcha"]') or "captcha" in self.page.url.lower():
-            raise DogrulamaGerekli(url)
-        try:
-            btn = self.page.query_selector("#sp-cc-accept")
-            if btn:
-                btn.click(timeout=3000)
-        except Exception:
-            pass
-
-    def kapat(self) -> None:
-        # Ctrl+C tarayıcıyı da öldürür; kapatırken çıkan hata önemsiz.
-        for f in (self.ctx.close, self.pw.stop):
-            try:
-                f()
-            except Exception:
-                pass
-
-
-def urun_sayfasi(tr: Tarayici, asin: str) -> dict | None:
+def urun_sayfasi(tr, asin: str) -> dict | None:
     tr.git(f"{BASE}/dp/{asin}?th=1&psc=1")
     b = tr.page.evaluate(URUN_JS)
     if not b["baslik"]:
@@ -350,25 +296,7 @@ def urun_sayfasi(tr: Tarayici, asin: str) -> dict | None:
             "html": tr.page.content()}
 
 
-def arama_sonuclari(tr: Tarayici, takip: dict) -> list[dict]:
-    toplam: dict[str, dict] = {}
-    marka_filtre = bool(takip.get("markalar"))
-    for sorgu in takip["aramalar"]:
-        for sayfa in range(1, int(takip.get("sayfa_sayisi", 3)) + 1):
-            sonuc = _ara(tr, takip, sorgu, sayfa, marka_filtre)
-            if not sonuc and sayfa == 1 and marka_filtre:
-                log("  marka filtresiyle sonuç yok, filtresiz deneniyor")
-                marka_filtre = False
-                sonuc = _ara(tr, takip, sorgu, sayfa, False)
-            if not sonuc:
-                break
-            for r in sonuc:
-                toplam.setdefault(r["asin"], r)
-    log(f"  arama: {len(toplam)} benzersiz sonuç")
-    return list(toplam.values())
-
-
-def _ara(tr: Tarayici, takip: dict, sorgu: str, sayfa: int, marka_filtre: bool) -> list[dict]:
+def _ara(tr, takip: dict, sorgu: str, sayfa: int, marka_filtre: bool) -> list[dict]:
     params = {"k": sorgu, "page": sayfa}
     if marka_filtre:
         params["rh"] = "p_89:" + "|".join(takip["markalar"])
@@ -481,51 +409,6 @@ def guvenli(fn, *a, **k):
         return None
 
 
-def bedensiz_takip(tr, con, takip, ayarlar, olaylar) -> None:
-    """Arama sonucundaki fiyatla takip (ör. Dior parfüm). Ürün sayfası açılmaz."""
-    for r in arama_sonuclari(tr, takip):
-        if not baslik_uygun(r["baslik"], takip):
-            continue
-        if con.execute("SELECT 1 FROM urunler WHERE asin=? AND aktif=0", (r["asin"],)).fetchone():
-            continue
-        fiyat = parse_price(r["fiyat"])
-        if fiyat is None:
-            continue
-        kaydet(con, takip, ayarlar, olaylar, asin=r["asin"], parent=None, baslik=r["baslik"],
-               beden=None, fiyat=fiyat, liste=parse_price(r["liste"]), stokta=True)
-
-
-def bedenli_takip(tr, con, takip, ayarlar, olaylar) -> None:
-    kural = takip["beden"]
-
-    # 1) Bilinen beden varyantlarını güncelle
-    satirlar = con.execute("SELECT asin,parent_asin,beden FROM urunler WHERE takip_id=? AND aktif=1",
-                           (takip["id"],)).fetchall()
-    log(f"  takipte {len(satirlar)} varyant")
-    for i, s in enumerate(satirlar, 1):
-        b = guvenli(urun_sayfasi, tr, s["asin"])
-        if b:
-            log(f"  kontrol {i}/{len(satirlar)}: {b['baslik'][:45]} [{s['beden']}] "
-                f"{tl(b['fiyat'])} {'stokta' if b['stokta'] else 'stok yok'}")
-            kaydet(con, takip, ayarlar, olaylar, asin=s["asin"], parent=s["parent_asin"],
-                   baslik=b["baslik"], beden=s["beden"], fiyat=b["fiyat"],
-                   liste=b["liste"], stokta=b["stokta"])
-
-    # 2) Yeni ürün keşfi
-    gun = int(takip.get("yeniden_tarama_gun", 7))
-    limit = int(takip.get("yeni_urun_limiti", 40))
-    acilan = 0
-    for r in arama_sonuclari(tr, takip):
-        if acilan >= limit:
-            log(f"  keşif limiti ({limit}) doldu, kalanlar sonraki çalıştırmada")
-            break
-        if not baslik_uygun(r["baslik"], takip) or yakin_zamanda_tarandi(con, r["asin"], gun):
-            continue
-        acilan += 1
-        log(f"  keşif {acilan}/{limit}: {r['baslik'][:60]}")
-        guvenli(_kesfet, tr, con, takip, ayarlar, olaylar, r["asin"], kural, gun)
-
-
 def _kesfet(tr, con, takip, ayarlar, olaylar, asin, kural, gun) -> None:
     b = urun_sayfasi(tr, asin)
     if not b:
@@ -574,175 +457,14 @@ def _kesfet(tr, con, takip, ayarlar, olaylar, asin, kural, gun) -> None:
                yeni_beden=onceden)
 
 
-# ---------------------------------------------------------------- bildirim
-
-def bildir(baslik: str, mesaj: str, url: str) -> None:
-    tn = next((p for p in ("/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier")
-               if Path(p).exists()), None) or shutil.which("terminal-notifier")
-    try:
-        if tn:
-            subprocess.run([tn, "-title", baslik, "-message", mesaj, "-open", url,
-                            "-sound", "default"], check=False, timeout=15)
-        else:
-            esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
-            subprocess.run(["osascript", "-e",
-                            f'display notification "{esc(mesaj)}" with title "{esc(baslik)}" sound name "Glass"'],
-                           check=False, timeout=15)
-    except Exception as e:
-        log(f"bildirim hatası: {e!r}")
-
-
-def telegram(metin: str, ayarlar: dict) -> None:
-    t = ayarlar.get("telegram") or {}
-    if not t.get("bot_token") or not t.get("chat_id"):
-        return
-    for i in range(0, len(metin), 3900):
-        veri = urllib.parse.urlencode({"chat_id": t["chat_id"], "text": metin[i:i + 3900],
-                                       "disable_web_page_preview": "true"}).encode()
-        try:
-            urllib.request.urlopen(f"https://api.telegram.org/bot{t['bot_token']}/sendMessage",
-                                   data=veri, timeout=20)
-        except Exception as e:
-            log(f"telegram hatası: {e!r}")
-
-
-def olaylari_gonder(olaylar: list[dict], ayarlar: dict) -> None:
-    if not olaylar:
-        log("Bildirilecek değişiklik yok.")
-        return
-    satirlar = []
-    for o in olaylar:
-        beden = f" [{o['beden']}]" if o["beden"] else ""
-        satirlar.append(f"{', '.join(o['nedenler'])}\n{o['baslik'][:90]}{beden}\n{tl(o['fiyat'])}\n{o['url']}")
-    if len(olaylar) <= 3:
-        for o in olaylar:
-            bildir(f"{o['takip']}: {o['nedenler'][0]}", f"{tl(o['fiyat'])} · {o['baslik'][:80]}", o["url"])
-    else:
-        bildir(f"Amazon: {len(olaylar)} değişiklik", "Ayrıntılar Telegram'da / tracker.py rapor", BASE)
-    telegram("\n\n".join(satirlar), ayarlar)
-
-
-# ---------------------------------------------------------------- komutlar
+# ---------------------------------------------------------------- ayarlar
 
 def ayarlari_yukle() -> dict:
     import yaml
     with CONFIG_PATH.open(encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    a = cfg.setdefault("ayarlar", {})
-    a.setdefault("headless", True)
-    a.setdefault("bekleme_saniye", [4, 8])
+    a = cfg.setdefault("ayarlar", {}) or {}
+    cfg["ayarlar"] = a
     a.setdefault("min_indirim_yuzde", 5)
-    a.setdefault("max_sayfa_yukleme", 400)
     a.setdefault("yeni_urun_bildir", False)
-    a.setdefault("telegram", {})
     return cfg
-
-
-def kilit_al() -> bool:
-    if LOCK_PATH.exists():
-        try:
-            os.kill(int(LOCK_PATH.read_text().strip()), 0)
-            return False
-        except (ValueError, ProcessLookupError):
-            pass
-        except PermissionError:
-            return False
-    LOCK_PATH.write_text(str(os.getpid()))
-    return True
-
-
-def cmd_calistir(args) -> None:
-    cfg = ayarlari_yukle()
-    a = cfg["ayarlar"]
-    if not kilit_al():
-        log("Önceki çalıştırma sürüyor, çıkılıyor.")
-        return
-    con = db_baglan()
-    olaylar: list[dict] = []
-    tr = None
-    try:
-        tr = Tarayici(a, headless=a["headless"] and not args.goster)
-        for takip in cfg["takipler"]:
-            if (args.sadece and takip["id"] != args.sadece) or not takip.get("aktif", True):
-                continue
-            log(f"== {takip['ad']} ==")
-            filtreyi_uygula(con, takip)
-            try:
-                (bedenli_takip if takip.get("beden") else bedensiz_takip)(tr, con, takip, a, olaylar)
-            except (DogrulamaGerekli, LimitAsildi):
-                raise
-            except Exception as e:
-                log(f"  takip hatası ({takip['id']}): {e!r}")
-    except DogrulamaGerekli as e:
-        log(f"CAPTCHA: {e}. 'tracker.py hazirla' ile çöz.")
-        bildir("Amazon doğrulama istedi", "Terminalde: tracker.py hazirla", BASE)
-        telegram("Amazon doğrulama (CAPTCHA) istedi. Mac'te: tracker.py hazirla", a)
-    except LimitAsildi:
-        log(f"Sayfa yükleme sınırı ({a['max_sayfa_yukleme']}) doldu; kalanlar sonraki çalıştırmada.")
-    except KeyboardInterrupt:
-        log("Durduruldu (Ctrl+C). Buraya kadar bulunanlar kaydedildi.")
-    finally:
-        try:
-            con.commit()
-            con.close()
-        finally:
-            LOCK_PATH.unlink(missing_ok=True)
-            if tr:
-                log(f"Toplam sayfa yüklemesi: {tr.istek}")
-                tr.kapat()
-    olaylari_gonder(olaylar, a)
-
-
-def cmd_hazirla(args) -> None:
-    a = ayarlari_yukle()["ayarlar"]
-    tr = Tarayici(a, headless=False)
-    tr.page.goto(BASE)
-    input("\nAçılan pencerede: çerezleri kabul et, doğrulama çıkarsa çöz, istersen teslimat\n"
-          "adresini (il/ilçe) seç. Bitince buraya dönüp Enter'a bas... ")
-    tr.kapat()
-    print("Profil kaydedildi.")
-
-
-def cmd_rapor(args) -> None:
-    cfg = ayarlari_yukle()
-    con = db_baglan()
-    for takip in cfg["takipler"]:
-        filtreyi_uygula(con, takip)
-        satirlar = con.execute(
-            "SELECT * FROM urunler WHERE takip_id=? AND aktif=1 ORDER BY stokta DESC, son_fiyat",
-            (takip["id"],)).fetchall()
-        stokta = sum(1 for s in satirlar if s["stokta"])
-        print(f"\n## {takip['ad']}: {len(satirlar)} ürün, {stokta} stokta")
-        for s in satirlar[: args.limit]:
-            durum = "STOKTA " if s["stokta"] else "yok    "
-            beden = f" [{s['beden']}]" if s["beden"] else ""
-            print(f"  {durum} {tl(s['son_fiyat']):>13}  (en düşük {tl(s['en_dusuk'])})  "
-                  f"{(s['baslik'] or '')[:55]}{beden}")
-            print(f"          {BASE}/dp/{s['asin']}")
-
-
-def cmd_bildirim_test(args) -> None:
-    a = ayarlari_yukle()["ayarlar"]
-    bildir("Amazon takip", "Test bildirimi", BASE)
-    telegram("Amazon takip: test mesajı", a)
-    print("Gönderildi (Telegram ayarlıysa oraya da).")
-
-
-def main() -> None:
-    p = argparse.ArgumentParser(description="Amazon.com.tr indirim/stok takipçisi")
-    alt = p.add_subparsers(dest="komut", required=True)
-    c = alt.add_parser("calistir")
-    c.add_argument("--sadece", help="yalnızca bu takip id'sini çalıştır")
-    c.add_argument("--goster", action="store_true", help="tarayıcıyı görünür aç")
-    c.set_defaults(fn=cmd_calistir)
-    alt.add_parser("hazirla").set_defaults(fn=cmd_hazirla)
-    r = alt.add_parser("rapor")
-    r.add_argument("--limit", type=int, default=30)
-    r.set_defaults(fn=cmd_rapor)
-    alt.add_parser("bildirim-test").set_defaults(fn=cmd_bildirim_test)
-    args = p.parse_args()
-    args.fn(args)
-
-
-if __name__ == "__main__":
-    main()

@@ -5,13 +5,13 @@ on:
   workflow_dispatch:
     inputs:
       mod:
-        description: 'kesif = önce yeni ürün keşfi, bitince fiyat/stok kontrolü; normal = dönüşümlü'
+        description: 'kesif = önce keşif, bitince fiyat/stok kontrolü; normal = dönüşümlü; sayfa = yalnızca sayfayı yenile'
         type: choice
-        options: [normal, kesif]
-        default: normal
+        options: [kesif, normal, sayfa]
+        default: kesif
       sayfa:
-        description: 'Bu çalışmada açılacak sayfa sayısı (normal 8, en fazla 120)'
-        default: '8'
+        description: 'Açılacak sayfa sayısı (en fazla 120)'
+        default: '120'
       grup:
         description: 'Hangi takipler çalışsın'
         type: choice
@@ -33,6 +33,8 @@ jobs:
     timeout-minutes: 120
     env:
       TZ: Europe/Istanbul
+      GITHUB_TOKEN: ${{ github.token }}
+      MOD: ${{ inputs.mod || 'kesif' }}
     environment:
       name: github-pages
       url: ${{ steps.yayin.outputs.page_url }}
@@ -44,44 +46,41 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Playwright
-        run: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+      - name: Paketler
+        run: pip install -r requirements.txt
 
-      - name: Önceki veriyi al
+      - name: Tarayıcı
+        if: env.MOD != 'sayfa'
+        run: python -m playwright install --with-deps chromium
+
+      # Tek veritabanı GitHub'daki 'veri' dalında. Mac kullanıyorsa (kilit varsa) bu çalışma atlanır.
+      - name: Veriyi al
+        id: al
         run: |
-          if git fetch -q origin veri 2>/dev/null; then
-            git show origin/veri:veri.db > veri.db
-            git show origin/veri:oturum.json > oturum.json 2>/dev/null || rm -f oturum.json
-            echo "veri dalından alındı"
-          else
-            echo "veri dalı yok; repodaki veri.db (varsa) kullanılacak"
-          fi
+          if [ "$MOD" = "sayfa" ]; then python senkron.py oku; exit $?; fi
+          set +e
+          python senkron.py al github
+          kod=$?
+          set -e
+          if [ $kod -eq 3 ]; then echo "atla=1" >> "$GITHUB_OUTPUT"; exit 0; fi
+          exit $kod
 
       - name: Tara
+        if: steps.al.outputs.atla != '1'
         env:
-          # Zamanlanmış çalışmalarda form yok: keşif öncelikli mod, 120 sayfa
-          MOD: ${{ inputs.mod || 'kesif' }}
           SAYFA_BUTCESI: ${{ inputs.sayfa || '120' }}
           GRUP: ${{ inputs.grup }}
         run: python takip.py
 
-      - name: Veriyi kaydet
-        if: always()
-        run: |
-          [ -f veri.db ] || exit 0
-          mkdir -p /tmp/veri && cp veri.db /tmp/veri/ && { cp oturum.json /tmp/veri/ 2>/dev/null || true; }
-          cd /tmp/veri
-          git init -q -b veri
-          git config user.name "takip-bot"
-          git config user.email "takip-bot@users.noreply.github.com"
-          git add -A && git commit -qm "veri $(date '+%F %T')"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" veri
+      - name: Veriyi geri yaz
+        if: always() && steps.al.outcome == 'success' && steps.al.outputs.atla != '1' && env.MOD != 'sayfa'
+        run: python senkron.py ver github
 
       - uses: actions/upload-pages-artifact@v3
-        if: always()
+        if: always() && steps.al.outputs.atla != '1'
         with:
           path: site
 
       - id: yayin
-        if: always()
+        if: always() && steps.al.outputs.atla != '1'
         uses: actions/deploy-pages@v4

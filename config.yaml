@@ -1,17 +1,9 @@
-# Amazon.com.tr takip ayarları. Değiştirdikten sonra yeniden kurulum gerekmez.
+# Amazon.com.tr takip ayarları. Mac ve GitHub aynı dosyayı kullanır:
+# asıl kopya GitHub'daki config.yaml'dır, Mac her taramadan önce onu indirir.
 
 ayarlar:
-  headless: true              # CAPTCHA sıklaşırsa false yap (pencere açılır)
-  bekleme_saniye: [4, 8]      # sayfa yüklemeleri arası rastgele bekleme
-  min_indirim_yuzde: 5        # son fiyata göre en az bu kadar düşüş = İNDİRİM
-  max_sayfa_yukleme: 400      # bir çalıştırmadaki üst sınır
-  yeni_urun_bildir: false     # true: ilk kez görülen stoktaki ürünü de bildir
-  telegram:                   # telefona bildirim için (isteğe bağlı)
-    bot_token: ""
-    chat_id: ""
-
-# Bu takiplerin eski kayıtları bir sonraki çalışmada silinir (tekrar çalışırsa iş yapmaz).
-veri_sil: [dior_parfum]
+  min_indirim_yuzde: 5        # son fiyata göre en az bu kadar düşüş = indirim
+  yeni_urun_bildir: false
 
 takipler:
   # Erkek pantolon, bel 34 / boy 34. Beden etiketindeki sayılar tam olarak
@@ -28,9 +20,7 @@ takipler:
       - ["pantolon", "jean", "kot", "chino", "trousers", "pants"]
     baslikta_olmamali: ["kadın", "kız çocuk", "erkek çocuk", "şort", "bermuda", "eşofman"]
     sayfa_sayisi: 3
-    yeni_urun_limiti: 40      # her çalıştırmada en çok kaç yeni ürün sayfası açılsın
     yeniden_tarama_gun: 7     # 34/34'ü olmayan ürüne kaç günde bir yeniden bakılsın
-    hedef_fiyat: null         # ör. 800 -> 800 TL ve altı ayrıca bildirilir
 
   # ---- Parfümler. Arama sonucu fiyatıyla takip edilir. Her ml ayrı satırdır.
   # gerekli: başlıkta (boşluk ve kesme işaretleri yok sayılarak) hepsi geçmeli
@@ -83,14 +73,11 @@ takipler:
       - ["gömlek", "gomlek", "shirt"]
     baslikta_olmamali: ["kadın", "çocuk", "tişört", "t-shirt"]
     sayfa_sayisi: 3
-    yeni_urun_limiti: 40
     yeniden_tarama_gun: 7
-    hedef_fiyat: null
 
   # ---- Saatler: yalnızca otomatik, safir camlı, bu markalardan, en fazla 38.000 TL.
   # Arama aşamasında yalnızca marka, fiyat ve kuvars/solar kelimesine bakılır.
   # Otomatik mekanizma ve safir cam ürün sayfasında doğrulanır; emin olunamazsa elenir.
-  # Satıcı: guvenilir_saticilar listesinde olmalı ya da Amazon satıcı puanı en az %90 olumlu olmalı.
   - id: saat_otomatik_safir
     ad: "Otomatik safir camlı saatler (en fazla 38.000 TL)"
     aramalar: ["Seiko otomatik saat", "Citizen otomatik saat", "Orient otomatik saat",
@@ -109,13 +96,17 @@ takipler:
     saat:
       markalar: ["Seiko", "Citizen", "Orient", "Lorus", "Alba", "Bulova", "Tissot", "Certina", "Hamilton", "Glycine", "Mido"]
       fiyat_ust: 38000
-      satici_min_olumlu: 90
-      guvenilir_saticilar: ["Amazon.com.tr"]   # bildiğin satıcı adlarını buraya ekle
 
-# Yalnızca GitHub (online) sürümü için. Saatte 2 çalışma x 8 sayfa = günde ~380 sayfa, güne yayılmış.
+
+# GitHub taramaları (12 saatte bir, 120 sayfa; bkz. .github/workflows/takip.yml)
 online:
-  sayfa_butcesi: 8            # bir çalışmada açılacak sayfa sayısı
   bekleme_saniye: [20, 40]    # sayfalar arası bekleme
-  kontrol_saat: 4             # takipteki pantolon/gömlek varyantı en geç kaç saatte bir kontrol edilsin
-  arama_saat_bedensiz: 6      # parfüm arama sayfaları kaç saatte bir yenilensin
-  arama_saat_bedenli: 24      # pantolon/gömlek aramaları (yeni ürün keşfi) kaç saatte bir
+  kontrol_saat: 4             # takipteki ürün en erken kaç saatte bir yeniden kontrol edilsin
+  kontrol_azami_saat: 24      # keşif sürerken bile hiçbir ürün bundan uzun süre kontrolsüz kalmaz
+  arama_saat_bedensiz: 6      # parfüm aramaları kaç saatte bir yenilensin
+  arama_saat_bedenli: 24      # pantolon/gömlek aramaları kaç saatte bir yenilensin
+
+# Mac taramaları (./amazon.sh ile elle başlatılır)
+mac:
+  bekleme_saniye: [8, 15]     # ev internetinde daha kısa bekleme yeterli
+  azami_sayfa: 500            # bir Mac taramasında açılabilecek en fazla sayfa
