@@ -1,13 +1,13 @@
 name: amazon-takip
 on:
   schedule:
-    - cron: '17 */12 * * *'   # 12 saatte bir: Türkiye saatiyle 03:17 ve 15:17
+    - cron: '17 */12 * * *'   # 12 saatte bir (03:17 ve 15:17): yalnızca takipteki ürünlerin kontrolü
   workflow_dispatch:
     inputs:
       mod:
-        description: 'kesif = önce keşif, bitince fiyat/stok kontrolü; normal = dönüşümlü; sayfa = yalnızca sayfayı yenile'
+        description: 'kesif = yeni ürün keşfi (bitince kontrol); kontrol = yalnızca takipteki ürünler; normal = dönüşümlü; sayfa = yalnızca sayfayı yenile'
         type: choice
-        options: [kesif, normal, sayfa]
+        options: [kesif, kontrol, normal, sayfa]
         default: kesif
       sayfa:
         description: 'Açılacak sayfa sayısı (en fazla 120)'
@@ -34,7 +34,7 @@ jobs:
     env:
       TZ: Europe/Istanbul
       GITHUB_TOKEN: ${{ github.token }}
-      MOD: ${{ inputs.mod || 'kesif' }}
+      MOD: ${{ inputs.mod || 'kontrol' }}   # zamanlanmış çalışma: yalnızca kontrol
     environment:
       name: github-pages
       url: ${{ steps.yayin.outputs.page_url }}

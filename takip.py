@@ -4,7 +4,8 @@ Amazon.com.tr takip çalıştırıcısı. Hem GitHub Actions hem Mac (mac.py üz
 
 Ortam değişkenleri:
   ORTAM          github (varsayılan) ya da mac
-  MOD            kesif: önce gecikmiş kontroller, sonra arama ve keşif, keşif bitince kontrol
+  MOD            kontrol: yalnızca takipteki ürünler (keşif yok, yeni ürün eklenmez)
+                 kesif: önce gecikmiş kontroller, sonra arama ve keşif, keşif bitince kontrol
                  normal: kontrol, arama ve keşif dönüşümlü
                  sayfa: Amazon'a bağlanmadan yalnızca web sayfasını üretir
   SAYFA_BUTCESI  bu çalışmada açılacak en fazla sayfa
@@ -376,9 +377,11 @@ def gorev_kontrol(tr, con, cfg, a, o, olaylar) -> bool:
     return True
 
 
-def gorev_arama(tr, con, cfg, a, o, olaylar) -> bool:
+def gorev_arama(tr, con, cfg, a, o, olaylar, yalniz_parfum: bool = False) -> bool:
+    """Vakti gelmiş bir arama sayfası. yalniz_parfum: kontrol modunda yalnızca parfüm
+    fiyatlarını güncellemek için (yeni ürün eklenmez)."""
     for t in cfg["takipler"]:
-        if not t.get("aktif", True):
+        if not t.get("aktif", True) or (yalniz_parfum and not t.get("parfum")):
             continue
         saat = t.get("arama_saat") or (o["arama_saat_bedenli"] if (t.get("beden") or t.get("saat"))
                                          else o["arama_saat_bedensiz"])
@@ -387,12 +390,12 @@ def gorev_arama(tr, con, cfg, a, o, olaylar) -> bool:
             for s in range(1, n + 1):
                 k = f"arama:{t['id']}:{sorgu}:{s}"
                 if eski_mi(dget(con, k), saat):
-                    _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat)
+                    _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat, yeni_ekleme=not yalniz_parfum)
                     return True
     return False
 
 
-def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
+def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat, yeni_ekleme: bool = True) -> None:
     marka = bool(t.get("markalar")) and dget(con, f"markasiz:{t['id']}") is None
     sonuc = T._ara(tr, t, sorgu, s, marka)
     if not sonuc and s == 1 and marka:
@@ -441,6 +444,8 @@ def _arama_yap(tr, con, t, a, olaylar, sorgu, s, n, k, saat) -> None:
                 continue
             if con.execute("SELECT 1 FROM urunler WHERE asin=? AND aktif=0", (r["asin"],)).fetchone():
                 continue
+            if not yeni_ekleme and not con.execute("SELECT 1 FROM urunler WHERE asin=?", (r["asin"],)).fetchone():
+                continue  # kontrol modu: yalnızca zaten takipteki ilanların fiyatı güncellenir
             fiyat = T.parse_price(r["fiyat"])
             if fiyat is None:
                 continue
@@ -489,6 +494,20 @@ def calis_normal(tr, con, cfg, a, o, olaylar) -> None:
             yapildi = GOREVLER[tip](tr, con, cfg, a, o, olaylar) or yapildi
         if not yapildi:
             log("Yapılacak iş kalmadı.")
+            return
+
+
+def calis_kontrol(tr, con, cfg, a, o, olaylar) -> None:
+    """Yalnızca takipteki ürünler: keşif ve yeni ürün yok.
+    Beden/saat ürünleri sayfasından, parfümler kendi arama sayfalarından güncellenir."""
+    n = 0
+    while tr.kalan() > 0:
+        yapildi = gorev_kontrol(tr, con, cfg, a, o, olaylar)
+        n += yapildi
+        if tr.kalan() > 0:
+            yapildi = gorev_arama(tr, con, cfg, a, o, olaylar, yalniz_parfum=True) or yapildi
+        if not yapildi:
+            log(f"Kontrol edilecek ürün kalmadı ({n} ürün sayfası kontrol edildi).")
             return
 
 
@@ -697,7 +716,8 @@ def main() -> None:
         else:
             tr = OnlineTarayici(o)
         is_cfg = {**cfg, "takipler": [t for t in cfg["takipler"] if grup_uyar(t, grup)]}
-        (calis_kesif if mod == "kesif" else calis_normal)(tr, con, is_cfg, a, o, olaylar)
+        calis = {"kesif": calis_kesif, "kontrol": calis_kontrol}.get(mod, calis_normal)
+        calis(tr, con, is_cfg, a, o, olaylar)
     except T.DogrulamaGerekli as ex:
         sonuc = "captcha"
         log(f"CAPTCHA yeniden denemede de çıktı ({ex}); bu çalışma burada bitti.")
